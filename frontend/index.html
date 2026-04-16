@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Voice Prompt Explorer</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+
+  <div class="app">
+
+    <header class="app-header">
+      <h1>Voice Prompt Explorer</h1>
+      <p class="subtitle">Explore how the browser hears you — and how AI corrects it</p>
+      <div id="health-status" class="health-badge health-checking">
+        checking ollama...
+      </div>
+    </header>
+
+    <section class="input-section card">
+
+      <textarea
+        id="prompt-input"
+        class="prompt-textarea"
+        placeholder="Type a prompt, or click the microphone to speak..."
+        rows="3"
+        spellcheck="false"
+      ></textarea>
+
+      <div class="controls">
+        <button id="record-btn" class="btn btn-record" data-state="idle">
+          <span class="btn-icon">&#x1F399;</span>
+          <span class="btn-label">Start Recording</span>
+        </button>
+        <button id="submit-btn" class="btn btn-primary">
+          <span>&#9654;</span>
+          Submit
+        </button>
+        <button id="clear-btn" class="btn btn-ghost">Clear</button>
+      </div>
+
+    </section>
+
+    <section id="pipeline-section" class="pipeline-section card hidden">
+
+      <h2 class="section-title">Pipeline Stages</h2>
+
+      <div class="stage" id="stage-raw">
+        <div class="stage-header">
+          <span class="stage-number">1</span>
+          <span class="stage-name">Raw Transcript</span>
+          <span class="stage-badge" id="raw-confidence"></span>
+        </div>
+        <div class="stage-content" id="raw-text"></div>
+      </div>
+
+      <div class="stage" id="stage-corrected">
+        <div class="stage-header">
+          <span class="stage-number">2</span>
+          <span class="stage-name">Corrected Text</span>
+          <span class="stage-badge changes-badge" id="corrected-changes"></span>
+        </div>
+        <div class="stage-content" id="corrected-text"></div>
+      </div>
+
+      <div class="stage stage-intent" id="stage-intent">
+        <div class="stage-header">
+          <span class="stage-number">3</span>
+          <span class="stage-name">Intent</span>
+          <span class="stage-badge success-badge" id="intent-confidence"></span>
+        </div>
+        <div class="stage-content intent-text" id="intent-text"></div>
+        <button id="speak-btn" class="btn btn-ghost speak-btn">
+          &#x1F50A; Speak Intent
+        </button>
+      </div>
+
+      <div class="latency-row">
+        <span class="latency-label">LLM latency:</span>
+        <span class="latency-value" id="latency-value">—</span>
+      </div>
+
+    </section>
+
+    <div id="error-banner" class="error-banner hidden"></div>
+
+    <section class="settings-section card">
+      <h2 class="section-title">Settings</h2>
+
+      <div class="settings-row">
+        <label for="model-select" class="setting-label">LLM Model</label>
+        <select id="model-select" class="setting-select">
+          <option value="phi4-mini:3.8b">phi4-mini:3.8b (default)</option>
+        </select>
+      </div>
+
+      <div class="settings-row">
+        <label for="confidence-threshold" class="setting-label">
+          Confidence threshold
+          <span id="threshold-value" class="setting-value">0.75</span>
+        </label>
+        <input
+          id="confidence-threshold"
+          type="range"
+          min="0"
+          max="1"
+          step="0.05"
+          value="0.75"
+          class="setting-range"
+        />
+      </div>
+
+    </section>
+
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+
+</body>
+</html>
