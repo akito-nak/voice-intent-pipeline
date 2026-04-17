@@ -26,7 +26,7 @@
 
 ## 1. Problem Statement
 
-Voice-to-text pipelines — whether using the browser's native Web Speech API or cloud-based ASR — frequently produce transcriptions that differ significantly from what the user actually said. This problem has two forms:
+Voice-to-text pipelines — whether using the browser's native Web Speech API or cloud-based ASR — sometimes produce transcriptions that differ from what the user actually said. This problem has two forms:
 
 | Problem | Example |
 |---|---|
