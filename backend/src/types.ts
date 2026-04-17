@@ -2,6 +2,7 @@ export interface CorrectionRequest {
   transcript: string;
   confidence: number;
   model?: string;
+  vocabSource?: VocabSource;
 }
 
 export interface CorrectionResponse {
@@ -26,4 +27,11 @@ export interface ErrorResponse {
 export interface WhisperResponse {
   transcript: string;
   latency_ms: number;
+}
+
+export type VocabSource = 'none' | 'static' | 'pokeapi' | 'rag';
+
+export interface VocabResult {
+  words: string[];
+  source: VocabSource;
 }

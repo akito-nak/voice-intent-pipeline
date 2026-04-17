@@ -97,6 +97,16 @@
       </div>
 
       <div class="settings-row">
+        <label for="vocab-select" class="setting-label">Vocabulary Source</label>
+        <select id="vocab-select" class="setting-select">
+          <option value="none">None</option>
+          <option value="static">Static list</option>
+          <option value="pokeapi">PokeAPI</option>
+          <option value="rag">RAG (ChromaDB)</option>
+        </select>
+      </div>
+
+      <div class="settings-row">
         <label for="model-select" class="setting-label">LLM Model</label>
         <select id="model-select" class="setting-select">
           <option value="phi4-mini:3.8b">phi4-mini:3.8b (default)</option>

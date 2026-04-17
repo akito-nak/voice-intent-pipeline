@@ -21,9 +21,10 @@ router.post('/correct', async (req: Request, res: Response) => {
   }
 
   const model = typeof body.model === 'string' ? body.model : DEFAULT_MODEL;
+  const vocabSource = (body.vocabSource ?? 'none') as import('../types.js').VocabSource;
 
   try {
-    const result = await correctTranscript(transcript, model);
+    const result = await correctTranscript(transcript, model, vocabSource);
     res.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';

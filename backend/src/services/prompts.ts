@@ -51,6 +51,16 @@ Output:
   "confidence": 0.95
 }`;
 
-export function buildCorrectionPrompt(transcript: string): string {
-  return `Input transcript: "${transcript}"`;
+export function buildCorrectionPrompt(
+  transcript: string,
+  vocabHints: string[] = []
+): string {
+  if (vocabHints.length === 0) {
+    return `Input transcript: "${transcript}"`;
+  }
+
+  return `Known vocabulary for this domain (the transcript may contain phonetic approximations of these words):
+${vocabHints.join(', ')}
+
+Input transcript: "${transcript}"`;
 }

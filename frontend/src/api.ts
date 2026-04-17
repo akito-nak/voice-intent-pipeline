@@ -2,6 +2,7 @@ export interface CorrectionRequest {
   transcript: string;
   confidence: number;
   model?: string;
+  vocabSource?: string;
 }
 
 export interface CorrectionResponse {

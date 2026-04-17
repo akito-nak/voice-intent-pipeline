@@ -26,6 +26,7 @@ export const elements = {
   errorBanner:         el<HTMLDivElement>('error-banner'),
   modelSelect:         el<HTMLSelectElement>('model-select'),
   asrSelect:           el<HTMLSelectElement>('asr-select'),
+  vocabSelect: el<HTMLSelectElement>('vocab-select'),
   confidenceThreshold: el<HTMLInputElement>('confidence-threshold'),
   thresholdValue:      el<HTMLSpanElement>('threshold-value'),
 };

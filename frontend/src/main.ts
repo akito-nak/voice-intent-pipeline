@@ -135,10 +135,11 @@ async function runCorrectionPipeline(
   }
 
   const model = elements.modelSelect.value;
+  const vocabSource = elements.vocabSelect.value;
   elements.submitBtn.disabled = true;
 
   try {
-    const result = await correctTranscript({ transcript, confidence, model });
+    const result = await correctTranscript({ transcript, confidence, model, vocabSource });
     renderPipeline(transcript, confidence, result);
     if (isTTSSupported()) void speak(result.intent);
   } catch (err) {

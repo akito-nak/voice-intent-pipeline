@@ -1,5 +1,7 @@
 import { CORRECTION_SYSTEM_PROMPT, buildCorrectionPrompt } from './prompts.js';
+import { getVocab, filterRelevantWords } from './vocab/index.js';
 import type { CorrectionResponse } from '../types.js';
+import type { VocabSource } from '../types.js';
 
 const OLLAMA_BASE_URL = 'http://localhost:11434';
 // export const DEFAULT_MODEL = 'phi4-mini:3.8b';
@@ -41,13 +43,22 @@ function calculateWER(original: string, corrected: string): number {
 
 export async function correctTranscript(
   transcript: string,
-  model: string = DEFAULT_MODEL
+  model: string = DEFAULT_MODEL,
+  vocabSource: VocabSource = 'none'
 ): Promise<CorrectionResponse> {
   const start = Date.now();
 
+  // Fetch vocabulary hints from the selected source
+  const vocabResult = await getVocab(vocabSource, transcript);
+
+  // For large sources (PokeAPI), filter down to relevant words only
+  const hints = vocabSource === 'rag'
+    ? vocabResult.words                              // RAG already filtered
+    : filterRelevantWords(vocabResult.words, transcript);
+
   const messages: OllamaMessage[] = [
     { role: 'system', content: CORRECTION_SYSTEM_PROMPT },
-    { role: 'user',   content: buildCorrectionPrompt(transcript) },
+    { role: 'user',   content: buildCorrectionPrompt(transcript, hints) },
   ];
 
   let response: Response;
