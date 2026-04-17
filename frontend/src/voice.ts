@@ -158,7 +158,10 @@ export class VoiceRecorder {
     });
 
     const transcript = this.finalTranscript.trim();
-    if (!transcript) {
+
+    // Only block if we have neither a transcript nor any audio.
+    // In Whisper mode the caller doesn't need the transcript — just the blob.
+    if (!transcript && audioBlob.size === 0) {
       this.callbacks.onError?.('No speech detected. Try again.');
       return;
     }

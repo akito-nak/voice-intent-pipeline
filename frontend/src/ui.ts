@@ -25,6 +25,7 @@ export const elements = {
   latencyValue:        el<HTMLSpanElement>('latency-value'),
   errorBanner:         el<HTMLDivElement>('error-banner'),
   modelSelect:         el<HTMLSelectElement>('model-select'),
+  asrSelect:           el<HTMLSelectElement>('asr-select'),
   confidenceThreshold: el<HTMLInputElement>('confidence-threshold'),
   thresholdValue:      el<HTMLSpanElement>('threshold-value'),
 };

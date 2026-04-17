@@ -89,6 +89,14 @@
       <h2 class="section-title">Settings</h2>
 
       <div class="settings-row">
+        <label for="asr-select" class="setting-label">ASR Engine</label>
+        <select id="asr-select" class="setting-select">
+          <option value="webspeech">Web Speech API</option>
+          <option value="whisper">Whisper (local)</option>
+        </select>
+      </div>
+
+      <div class="settings-row">
         <label for="model-select" class="setting-label">LLM Model</label>
         <select id="model-select" class="setting-select">
           <option value="phi4-mini:3.8b">phi4-mini:3.8b (default)</option>

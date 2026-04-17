@@ -1,5 +1,5 @@
 import { VoiceRecorder, isASRSupported, type TranscriptResult } from './voice.js';
-import { correctTranscript, checkHealth, type ApiError }         from './api.js';
+import { correctTranscript, checkHealth, whisperTranscript, type ApiError, WhisperResponse } from './api.js';
 import { speak, isTTSSupported }                                  from './tts.js';
 import {
   elements,
@@ -38,11 +38,36 @@ const recorder = new VoiceRecorder({
   },
 
   onFinal: (result: TranscriptResult) => {
-    lastTranscript = result.transcript;
-    lastConfidence = result.confidence;
-    elements.promptInput.value = result.transcript;
+  lastTranscript = result.transcript;
+  lastConfidence = result.confidence;
+  elements.promptInput.value = result.transcript;
+
+  const asrMode = elements.asrSelect.value;
+
+  if (asrMode === 'whisper' && result.audioBlob && result.audioBlob.size > 0) {
+    // Whisper path — send audio blob to backend, bypass Web Speech transcript
+    setRecordState('processing');
+    whisperTranscript(result.audioBlob)
+      .then((whisperResult: WhisperResponse) => {
+        lastTranscript = whisperResult.transcript;
+        lastConfidence = 1.0;
+        elements.promptInput.value = whisperResult.transcript;
+        void runCorrectionPipeline(whisperResult.transcript, 1.0);
+      })
+      .catch((err: ApiError) => {
+        setRecordState('error');
+        showError(err.error ?? 'Whisper transcription failed');
+      });
+    } else {
+    // Web Speech API path — use the transcript we already have
+    if (!result.transcript) {
+      setRecordState('error');
+      showError('No speech detected. Try again.');
+      return;
+    }
     void runCorrectionPipeline(result.transcript, result.confidence);
-  },
+  }
+},
 
   onError: (message: string) => {
     setRecordState('error');

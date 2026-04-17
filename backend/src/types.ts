@@ -22,3 +22,8 @@ export interface ErrorResponse {
   error: string;
   code: string;
 }
+
+export interface WhisperResponse {
+  transcript: string;
+  latency_ms: number;
+}
