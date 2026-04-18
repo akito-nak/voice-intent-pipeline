@@ -11,6 +11,8 @@ export interface CorrectionResponse {
   changes: string[];
   confidence: number;
   latency_ms: number;
+  vocabHints: string[];
+  vocabSource: VocabSource;
 }
 
 export interface HealthResponse {

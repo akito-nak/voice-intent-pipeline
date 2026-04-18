@@ -4,7 +4,7 @@ import type { VocabResult } from '../../types.js';
 const COLLECTION_NAME = 'pokemon-vocab';
 const OLLAMA_BASE     = 'http://localhost:11434';
 const EMBED_MODEL     = 'nomic-embed-text';
-const TOP_K           = 15; // how many similar words to return per query
+const TOP_K           = 8; // how many similar words to return per query
 
 let collection: Collection | null = null;
 let client: ChromaClient | null = null;

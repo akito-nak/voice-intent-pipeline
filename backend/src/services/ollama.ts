@@ -101,9 +101,10 @@ export async function correctTranscript(
   // This is an objective measure, unlike the LLM's self-reported confidence.
   const wer = calculateWER(transcript, parsed.corrected);
 
-  // If more than 40% of words changed, the LLM almost certainly overcorrected.
-  // Cap its confidence so the UI reflects the uncertainty.
-  const computedConfidence = wer > 0.4
+  // Skip the WER cap when vocabulary hints were provided — legitimate
+  // domain corrections (e.g. "feral gator" → "Feraligatr") change word
+  // count and position, which trips the WER threshold incorrectly.
+  const computedConfidence = (wer > 0.4 && hints.length === 0)
     ? Math.min(parsed.confidence, 0.5)
     : parsed.confidence;
 
@@ -113,6 +114,8 @@ export async function correctTranscript(
     changes:    Array.isArray(parsed.changes) ? parsed.changes : [],
     confidence: computedConfidence,
     latency_ms: Date.now() - start,
+    vocabHints:  hints,
+    vocabSource: vocabSource,
   };
 }
 

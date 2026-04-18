@@ -34,26 +34,64 @@ export async function getVocab(
 export function filterRelevantWords(
   words: string[],
   transcript: string,
-  maxWords = 20
+  maxWords = 8
 ): string[] {
   const transcriptWords = transcript
     .toLowerCase()
     .split(/\s+/)
-    .filter(w => w.length > 3); // ignore short words like "a", "to", "the"
+    .filter(w => w.length > 4);
 
-  const scored = words
-    .map(word => {
-      const wordLower = word.toLowerCase();
-      // Score: how many transcript words appear as substrings of this vocab word?
-      // "feral" inside "feraligatr" → match
-      // "draco" inside "draco meteor" → match
-      const score = transcriptWords.filter(tw => wordLower.includes(tw)).length;
-      return { word, score };
-    })
-    .filter(({ score }) => score > 0)
+  if (transcriptWords.length === 0) return [];
+
+  // ── Pass 1: multi-word terms ──────────────────────────────────────────────
+  // ALL component words must have an exact transcript word match.
+  // Words used by a matching multi-word term are "claimed" so they can't
+  // inflate single-word scores (e.g. "meteor" claimed by "Draco Meteor"
+  // must not also match "Meteorite").
+  const claimedWords = new Set<string>();
+  const multiWordResults: { word: string; score: number }[] = [];
+
+  for (const word of words) {
+    const wordLower  = word.toLowerCase();
+    const vocabParts = wordLower.split(' ');
+    if (vocabParts.length < 2) continue;
+
+    const allPartsMatch = vocabParts.every(vp =>
+      transcriptWords.some(tw => vp === tw)
+    );
+    if (allPartsMatch) {
+      multiWordResults.push({ word, score: vocabParts.length });
+      vocabParts.forEach(vp => {
+        const matched = transcriptWords.find(tw => vp === tw);
+        if (matched) claimedWords.add(matched);
+      });
+    }
+  }
+
+  // ── Pass 2: single-word terms ─────────────────────────────────────────────
+  // Use only the transcript words NOT already claimed by a multi-word match.
+  // This prevents "meteor" (claimed by "Draco Meteor") from also pulling in
+  // "Meteorite". The combined length of unclaimed matches must cover ≥45%
+  // of the vocab word, so "feral" alone (5/10 = 50%) still matches
+  // "Feraligatr" even though "gator" isn't actually a substring of it.
+  const unclaimedWords = transcriptWords.filter(tw => !claimedWords.has(tw));
+  const singleWordResults: { word: string; score: number }[] = [];
+
+  for (const word of words) {
+    const wordLower  = word.toLowerCase();
+    const vocabParts = wordLower.split(' ');
+    if (vocabParts.length > 1) continue;
+
+    const matchingWords = unclaimedWords.filter(tw => wordLower.includes(tw));
+    const combinedLen   = matchingWords.reduce((sum, tw) => sum + tw.length, 0);
+    if (combinedLen / wordLower.length >= 0.45) {
+      singleWordResults.push({ word, score: matchingWords.length });
+    }
+  }
+
+  // ── Combine, rank, cap ────────────────────────────────────────────────────
+  return [...multiWordResults, ...singleWordResults]
     .sort((a, b) => b.score - a.score)
     .slice(0, maxWords)
     .map(({ word }) => word);
-
-  return scored;
 }

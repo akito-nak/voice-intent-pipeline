@@ -17,6 +17,8 @@ export const elements = {
   pipelineSection:     el<HTMLElement>('pipeline-section'),
   rawText:             el<HTMLDivElement>('raw-text'),
   rawConfidence:       el<HTMLSpanElement>('raw-confidence'),
+  vocabHintsText:    el<HTMLDivElement>('vocab-hints-text'),
+  vocabSourceBadge:  el<HTMLSpanElement>('vocab-source-badge'),
   correctedText:       el<HTMLDivElement>('corrected-text'),
   correctedChanges:    el<HTMLSpanElement>('corrected-changes'),
   intentText:          el<HTMLDivElement>('intent-text'),
@@ -89,6 +91,15 @@ export function renderPipeline(
   elements.rawText.textContent = rawTranscript;
   elements.rawConfidence.textContent = `confidence: ${Math.round(rawConfidence * 100)}%`;
 
+    // Stage 2 — vocabulary hints
+  if (result.vocabHints.length > 0) {
+    elements.vocabHintsText.textContent = result.vocabHints.join(', ');
+    elements.vocabSourceBadge.textContent = `source: ${result.vocabSource}`;
+  } else {
+    elements.vocabHintsText.textContent = 'none';
+    elements.vocabSourceBadge.textContent = `source: ${result.vocabSource}`;
+  }
+
   elements.correctedText.textContent = result.corrected;
   elements.correctedChanges.textContent = result.changes.length > 0
     ? result.changes.join(', ')
@@ -106,6 +117,8 @@ export function clearPipeline(): void {
   elements.correctedText.textContent = '';
   elements.intentText.textContent = '';
   elements.latencyValue.textContent = '—';
+  elements.vocabHintsText.textContent = '';
+  elements.vocabSourceBadge.textContent = '';
 }
 
 export function showError(message: string): void {
