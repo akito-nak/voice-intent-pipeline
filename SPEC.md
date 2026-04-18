@@ -693,6 +693,46 @@ Without this example, `gemma4:e4b` corrected "chew" to "choice" (standard Englis
 
 ---
 
+### Phase 5 — Automatic Domain Detection *(planned)*
+
+**Goal:** Remove the manual vocab source selector. The pipeline should decide whether to fetch vocabulary hints — and from which source — based on the transcript itself.
+
+**The problem with the current design:**
+
+The vocab source (None / Static / PokeAPI / RAG) is a setting the user pre-selects before speaking. This is backwards: a user shouldn't need to know what domain their prompt belongs to before saying it. In a real application, vocabulary hints should be applied automatically when relevant and skipped when not.
+
+Injecting Pokémon hints into a transcript like "set a timer for three minutes" is wasteful and risks misleading the LLM. The vocab system should be invisible and self-managing.
+
+**The circular dependency problem:**
+
+You can't classify "feral gator" as Pokémon-related without phonetic matching — which is exactly the problem the vocab system is trying to solve. A naive keyword classifier would fail on the very errors that need correcting.
+
+**Approaches to break the circularity:**
+
+| Approach | How it works | Trade-off |
+|---|---|---|
+| **Two-pass LLM** | First LLM call classifies the domain ("Pokémon battle", "timer", "reminder"), second call corrects with hints from the matched domain | 2× LLM latency |
+| **Phonetic pre-scan always-on** | Run the RAG phonetic index on every transcript regardless of source setting. Only inject hints if the number of phonetic matches exceeds a confidence threshold | Always pays the index lookup cost (~5ms), avoids extra LLM call |
+| **Application-level context** | The calling application declares its domain (e.g. `context: "pokemon"`) and the pipeline uses that to select vocab. The pipeline itself doesn't need to guess | Requires the application to know its domain — sensible for production, less useful for a general explorer |
+
+**Recommended approach for this repo:**
+
+Implement the **phonetic pre-scan** as an "Auto" option in the vocab source selector:
+
+1. Run the RAG Double Metaphone index against the transcript
+2. If 1 or more matches are found with high phonetic similarity, fetch and inject the full PokeAPI hints
+3. If no matches, proceed without hints
+
+This keeps the manual options for experimentation while making "Auto" the sensible default for real use.
+
+- [ ] Add `vocabSource: 'auto'` to the `VocabSource` type
+- [ ] In `vocab/index.ts`, implement Auto: run RAG scan first, fall back to PokeAPI hints if matches found, else return empty
+- [ ] Update the UI selector to include "Auto (detect)" as the default option
+- [ ] Add confidence threshold for minimum phonetic match score to trigger hint injection
+- [ ] Document which source was used in the Vocabulary Hints pipeline stage
+
+---
+
 ## 11. Latency Budget
 
 **Observed latencies (M1 Pro, 32GB RAM):**
