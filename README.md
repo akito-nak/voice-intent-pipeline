@@ -13,7 +13,7 @@ Voice-to-text pipelines frequently produce transcriptions that differ from what 
 | Problem | Example |
 |---|---|
 | **Phonetic substitution** | User says "three minutes" → ASR hears "free minutes" |
-| **Domain hallucination** | User says "Charizard" → ASR hears "Charles R" |
+| **Domain hallucination** | User says "Feraligatr" → ASR hears "feral gator" |
 
 The Web Speech API uses a general-purpose acoustic model. When it encounters an ambiguous sound, it substitutes the closest word from its training data — confidently and silently. This project builds a layered pipeline that catches and corrects these errors.
 
@@ -31,9 +31,13 @@ Layer 1 — Audio Capture       MediaRecorder API  →  raw audio blob (WebM)
     │
     ▼
 Layer 2 — ASR                 Web Speech API     →  raw transcript + confidence score
+                              OR Whisper (local) →  higher accuracy, ~5s more latency
     │
     ▼
 Layer 3 — Confidence Filter   if score < threshold, warn the user before proceeding
+    │
+    ▼
+Layer 3.5 — Vocabulary Hints  fetch domain words from Static / PokeAPI / RAG phonetic index
     │
     ▼
 Layer 4 — LLM Correction      Ollama (local LLM) →  corrected text + intent + changes
@@ -53,16 +57,16 @@ Each layer is visible in the UI so you can see exactly what changed and why.
 | Frontend | Vanilla HTML + CSS + TypeScript | No framework — every line is visible and educational |
 | Build tool | Vite | TypeScript out of the box, fast dev server, proxy support |
 | Backend | Node.js + TypeScript + Express | Proxy between browser and Ollama, prompt engineering lives here |
-| ASR | Web Speech API (`SpeechRecognition`) | Built into Chrome/Edge, zero install |
+| ASR (primary) | Web Speech API (`SpeechRecognition`) | Built into Chrome/Edge, zero install |
+| ASR (secondary) | whisper.cpp (local) | Fully private, higher accuracy on domain vocabulary |
 | LLM | Ollama (local) | Free, runs on-device, no API keys, M1 Metal acceleration |
 | TTS | Web Speech Synthesis API | Built into all browsers, zero install |
+| Vocab (phonetic) | Double Metaphone via `natural` | Finds vocab words that sound like the ASR output |
 | Styling | Plain CSS with CSS variables | No dependencies, responsive by default |
 
 ---
 
 ## Prerequisites
-
-Before you start, you need the following installed:
 
 ### 1. Node.js (v18 or higher)
 
@@ -70,90 +74,94 @@ Before you start, you need the following installed:
 node --version   # should print v18.x or higher
 ```
 
-Download from [nodejs.org](https://nodejs.org) if not installed.
-
 ### 2. Ollama
 
-Ollama runs open-source LLMs locally via a simple REST API.
-
 ```bash
-# Install on macOS
 brew install ollama
-
-# Verify installation
 ollama --version
 ```
 
 Or download from [ollama.com](https://ollama.com).
 
-### 3. A supported LLM model
-
-Pull at least one model. The app defaults to `gemma4:e4b` which gives the best balance of speed and instruction-following accuracy:
+### 3. LLM models
 
 ```bash
-# Recommended — best instruction following, fast on M1
+# Recommended — best instruction following
 ollama pull gemma4:e4b
 
-# Alternative — good for comparison, already common
+# Alternatives
 ollama pull mistral:7b-instruct-q4_K_M
-
-# Fastest — lowest latency, less accurate
 ollama pull phi4-mini:3.8b
 ```
 
-### 4. Chrome or Edge browser
+### 4. Embedding model (for RAG vocab source)
 
-The Web Speech API (`SpeechRecognition`) is only available in Chromium-based browsers. Firefox does not support it.
+```bash
+ollama pull nomic-embed-text
+```
+
+### 5. whisper.cpp (for Whisper ASR)
+
+whisper.cpp is a C++ port of OpenAI's Whisper that runs natively on Apple Silicon via Metal.
+
+```bash
+brew install whisper-cpp
+```
+
+Then download the model weights:
+
+```bash
+# The install script bundled with whisper.cpp may not be on your PATH.
+# Download the model directly from HuggingFace instead:
+curl -L \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin \
+  -o $(brew --prefix)/share/whisper.cpp/models/ggml-base.en.bin
+```
+
+Verify it works:
+
+```bash
+echo "test" | whisper-cli --model $(brew --prefix)/share/whisper.cpp/models/ggml-base.en.bin
+```
+
+### 6. ffmpeg (required for Whisper audio conversion)
+
+The browser records audio as WebM/Opus. Whisper requires WAV (16kHz mono). ffmpeg handles the conversion automatically on each Whisper request.
+
+```bash
+brew install ffmpeg
+ffmpeg -version
+```
+
+### 7. Chrome or Edge
+
+The Web Speech API is only available in Chromium-based browsers. Firefox does not support it.
 
 ---
 
 ## Setup
 
-### 1. Clone the repository
-
 ```bash
 git clone https://github.com/your-username/vocal-intent-pipeline.git
 cd vocal-intent-pipeline
-```
-
-### 2. Install dependencies
-
-```bash
 npm install
 ```
 
-This installs dependencies for both the `frontend` and `backend` packages in one command, using npm workspaces.
-
-### 3. Start Ollama
-
-Ollama must be running before you start the app. In a separate terminal:
+Start Ollama in a separate terminal:
 
 ```bash
 ollama serve
-```
-
-If Ollama is already running in the background (e.g. started at login), you can skip this step. You can check with:
-
-```bash
-curl http://localhost:11434/api/tags
 ```
 
 ---
 
 ## Running the App
 
-From the project root, start both servers with one command:
-
 ```bash
 npm run dev
 ```
 
-This runs the backend (Express) and frontend (Vite) concurrently. You should see:
-
-```
-[0] Backend running at http://localhost:3001
-[1] VITE v6.x  ready at http://localhost:5173
-```
+This starts both the backend (Express, port 3001) and frontend (Vite, port 5173) together.
 
 Open **http://localhost:5173** in Chrome or Edge.
 
@@ -174,20 +182,45 @@ Open **http://localhost:5173** in Chrome or Edge.
 
 ### Reading the pipeline output
 
-After submitting, three stages appear:
+After submitting, four stages appear:
 
 | Stage | What it shows |
 |---|---|
 | **Raw Transcript** | Exactly what the ASR engine heard, plus its confidence score |
+| **Vocabulary Hints** | Domain words fetched from the selected vocab source, injected into the LLM prompt |
 | **Corrected Text** | The LLM's corrected version, with a list of changes made |
 | **Intent** | What the LLM determined you meant to accomplish |
 
-Click **Speak Intent** to hear the detected intent read back to you via TTS.
+Click **Speak Intent** to hear the detected intent via TTS.
 
 ### Settings
 
-- **LLM Model** — switch between any model installed in Ollama. Results and latency vary significantly between models
-- **Confidence threshold** — ASR results below this score trigger a warning before sending to the LLM. Lower this if you speak with a strong accent or in a noisy environment
+| Setting | Options | Notes |
+|---|---|---|
+| **ASR** | Web Speech API / Whisper | Whisper is ~5s slower but more accurate on proper nouns |
+| **Vocabulary source** | None / Static / PokeAPI / RAG | See vocabulary section below |
+| **LLM Model** | Any model installed in Ollama | Larger models follow correction rules more reliably |
+| **Confidence threshold** | 0–1 slider | ASR results below this trigger a warning |
+
+---
+
+## Vocabulary Sources
+
+The vocabulary system solves domain hallucination — ASR errors on words outside the general English vocabulary. Before sending a transcript to the LLM, the app fetches relevant domain words and injects them as hints into the prompt.
+
+| Source | How it works | Best for |
+|---|---|---|
+| **None** | No hints — LLM uses general knowledge only | Standard English phrases |
+| **Static** | Reads a curated word list from `backend/data/vocab.json` | Small, controlled domain vocabularies |
+| **PokeAPI** | Fetches all Pokémon/move/item names from the public PokeAPI (cached 24h), then filters by substring match against the transcript | Multi-word splits like "feral gator" → Feraligatr |
+| **RAG** | Builds a phonetic index using Double Metaphone, retrieves vocab words whose phonetic code matches transcript words | Pure phonetic errors like "pick a chew" → Pikachu |
+
+### Why two different matching strategies?
+
+- **Substring matching** (PokeAPI) catches cases where ASR splits a name into recognisable pieces — "feral" and "gator" are both substrings of "feraligatr"
+- **Phonetic matching** (RAG) catches cases where ASR replaces syllables with similar-sounding English words — "pick" (PK) has the same Double Metaphone code as the start of "pikachu" (PKX)
+
+Neither approach solves every case — they complement each other.
 
 ---
 
@@ -195,110 +228,96 @@ Click **Speak Intent** to hear the detected intent read back to you via TTS.
 
 ```
 vocal-intent-pipeline/
-├── package.json              ← workspace root, runs both packages together
-├── SPEC.md                   ← full project specification and design decisions
+├── package.json                  ← workspace root
+├── SPEC.md                       ← full specification + design decisions + learnings
 │
 ├── backend/
 │   ├── package.json
 │   ├── tsconfig.json
+│   ├── data/
+│   │   └── vocab.json            ← static vocabulary word list
 │   └── src/
-│       ├── server.ts         ← Express entry point, middleware setup
-│       ├── types.ts          ← shared TypeScript interfaces (request/response shapes)
+│       ├── server.ts             ← Express entry point
+│       ├── types.ts              ← shared TypeScript interfaces
 │       ├── routes/
-│       │   ├── correct.ts    ← POST /api/correct  — receives transcript, calls LLM
-│       │   └── health.ts     ← GET  /api/health   — checks Ollama, lists models
+│       │   ├── correct.ts        ← POST /api/correct
+│       │   ├── whisper.ts        ← POST /api/whisper
+│       │   └── health.ts         ← GET  /api/health
 │       └── services/
-│           ├── ollama.ts     ← Ollama REST client + WER safety check
-│           └── prompts.ts    ← LLM system prompt and few-shot examples
+│           ├── ollama.ts         ← Ollama REST client + WER safety check
+│           ├── prompts.ts        ← LLM system prompt + few-shot examples
+│           ├── whisper.ts        ← whisper-cli subprocess + ffmpeg conversion
+│           └── vocab/
+│               ├── index.ts      ← router + filterRelevantWords
+│               ├── none.ts       ← returns empty result
+│               ├── static.ts     ← reads vocab.json with in-memory cache
+│               ├── pokeapi.ts    ← PokeAPI client with 24hr TTL cache
+│               └── rag.ts        ← Double Metaphone phonetic index
 │
 └── frontend/
-    ├── index.html            ← page structure, all element IDs
-    ├── vite.config.ts        ← Vite config + dev proxy to backend
+    ├── index.html
+    ├── vite.config.ts
     ├── tsconfig.json
     └── src/
-        ├── main.ts           ← entry point, wires all modules together
-        ├── voice.ts          ← MediaRecorder + Web Speech API (ASR)
-        ├── api.ts            ← fetch calls to the Express backend
-        ├── tts.ts            ← Web Speech Synthesis (TTS)
-        ├── ui.ts             ← all DOM reads and writes
-        └── style.css         ← dark theme, CSS variables, animations
+        ├── main.ts               ← entry point, wires all modules
+        ├── voice.ts              ← MediaRecorder + Web Speech API
+        ├── api.ts                ← fetch calls to the Express backend
+        ├── tts.ts                ← Web Speech Synthesis
+        ├── ui.ts                 ← all DOM reads and writes
+        └── style.css             ← dark theme, CSS variables, animations
 ```
 
 ---
 
 ## API Reference
 
-The backend runs at `http://localhost:3001`. During development, Vite proxies `/api/*` requests so the frontend can use relative paths.
-
 ### `POST /api/correct`
-
-Sends a raw transcript to the LLM for correction and intent extraction.
 
 **Request:**
 ```json
 {
-  "transcript": "can you set a timer for free minutes",
-  "confidence": 0.82,
-  "model": "gemma4:e4b"
+  "transcript": "I want to use feral gator and draco meteor",
+  "confidence": 0.95,
+  "model": "gemma4:e4b",
+  "vocabSource": "pokeapi"
 }
 ```
 
 **Response:**
 ```json
 {
-  "corrected": "can you set a timer for three minutes",
-  "intent": "Set a 3-minute timer",
-  "changes": ["free → three"],
-  "confidence": 0.97,
-  "latency_ms": 1250
+  "corrected": "I want to use Feraligatr and Draco Meteor",
+  "intent": "Use Feraligatr with Draco Meteor",
+  "changes": ["feral gator → Feraligatr", "draco meteor → Draco Meteor"],
+  "confidence": 0.98,
+  "latency_ms": 8551,
+  "vocabHints": ["Draco Meteor", "Feraligatr"],
+  "vocabSource": "pokeapi"
+}
+```
+
+### `POST /api/whisper`
+
+**Request:** `multipart/form-data` with an `audio` field containing a WebM blob
+
+**Response:**
+```json
+{
+  "transcript": "I want to use Feraligatr and Draco Meteor",
+  "latency_ms": 4230
 }
 ```
 
 ### `GET /api/health`
 
-Returns Ollama status and available models. Called on page load to populate the model selector.
-
 **Response:**
 ```json
 {
   "ollama": true,
-  "models": ["gemma4:e4b", "mistral:7b-instruct-q4_K_M", "phi4-mini:3.8b"],
+  "models": ["gemma4:e4b", "mistral:7b-instruct-q4_K_M"],
   "default_model": "gemma4:e4b"
 }
 ```
-
----
-
-## Accuracy Layers Explained
-
-### Why ASR hallucinates
-
-The Web Speech API is a general acoustic model. When it encounters an ambiguous phoneme sequence, it substitutes the statistically most likely word — not the correct one. Common failure patterns:
-
-| Said | Heard | Reason |
-|---|---|---|
-| "three" | "free" | Phonetically similar |
-| "write code" | "right code" | Homophones |
-| "neural net" | "new URL net" | Partial phonetic match |
-| "medication" | "medic asian" | Compound word split |
-| "Ollama" | "a llama" | Unknown proper noun |
-
-### How the LLM corrects this
-
-The LLM has two advantages over raw ASR:
-
-1. **Context** — it understands that "free minutes" in the context of a timer almost certainly means "three minutes"
-2. **Instruction following** — it can be given explicit rules like "do not change proper nouns" and "only fix clear phonetic errors"
-
-### The WER safety check
-
-LLMs can overcorrect — changing words that were correct to begin with (e.g. "corn muffin" → "carnation muffin"). The backend measures **Word Error Rate** after every LLM response:
-
-```
-WER = words changed ÷ total words in original
-```
-
-If the LLM changed more than 40% of the words, its confidence score is automatically capped at 50% to signal to the UI that the correction is uncertain. Additionally, if the LLM reports "no changes" but the text actually changed, the original transcript is restored.
 
 ---
 
@@ -306,44 +325,52 @@ If the LLM changed more than 40% of the words, its confidence score is automatic
 
 | Model | Size | Speed | Best for |
 |---|---|---|---|
-| `gemma4:e4b` | ~3GB | Fast | Best instruction following, default choice |
-| `mistral:7b-instruct-q4_K_M` | 4.4GB | Medium | Strong alternative, good accuracy |
-| `gemma3:4b` | 3.3GB | Fast | Comparison against Gemma 4 |
-| `phi4-mini:3.8b` | 2.5GB | Fastest | Lowest latency, less reliable rule-following |
-
-Switch between models using the dropdown in the Settings panel. The latency display shows how long each model takes so you can compare directly.
+| `gemma4:e4b` | ~3GB | Fast | Best instruction following, default |
+| `mistral:7b-instruct-q4_K_M` | 4.4GB | Medium | Strong alternative |
+| `phi4-mini:3.8b` | 2.5GB | Fastest | Low latency, less reliable rule-following |
 
 ---
 
 ## Troubleshooting
 
-**"Ollama not running" in the health badge**
-Start Ollama: `ollama serve`
+**"Ollama not running"**
+Run `ollama serve` in a separate terminal.
 
 **"Web Speech API not supported"**
-Switch to Chrome or Edge. Firefox does not support `SpeechRecognition`.
+Switch to Chrome or Edge.
 
 **Microphone permission denied**
-Click the lock icon in your browser's address bar → Site settings → Microphone → Allow, then refresh.
+Click the lock icon → Site settings → Microphone → Allow, then refresh.
 
-**No speech detected after recording**
-The Web Speech API requires an internet connection — it sends audio to Google's servers. Check your connection.
+**"No speech detected" with Whisper**
+Make sure ffmpeg is installed (`brew install ffmpeg`). Whisper requires audio conversion from WebM to WAV before it can process audio.
+
+**Whisper model not found**
+Download the model manually:
+```bash
+curl -L \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin \
+  -o $(brew --prefix)/share/whisper.cpp/models/ggml-base.en.bin
+```
 
 **LLM changes words it shouldn't**
-Try switching to `gemma4:e4b` or `mistral:7b-instruct-q4_K_M` in the Settings panel. Larger, instruction-tuned models follow the "do not change" rules more reliably.
+Switch to `gemma4:e4b`. Smaller models follow the "do not change proper nouns" rule less reliably.
 
-**High latency**
-Use a smaller model (`phi4-mini:3.8b`) or lower the confidence threshold to skip the LLM on high-confidence ASR results.
+**PokeAPI returns no hints**
+The PokeAPI cache is built on first use — it may take a few seconds. Check the backend terminal for `pokeapi: fetched N pokemon`.
+
+**RAG phonetic index empty**
+The RAG index builds on first use. Check backend logs for `RAG: phonetic index built`.
 
 ---
 
 ## Roadmap
 
-- **Phase 2 — Whisper integration:** Replace or augment the Web Speech API with a local Whisper model for higher accuracy and offline support
-- **Phase 3 — Domain vocabulary:** Solve the Pokémon / proper noun problem with vocabulary hint lists and phonetic similarity matching
-- **Phase 4 — Evaluation suite:** Automated WER benchmarking across a test phrase library, with results displayed in the UI
+- **Phase 4 — Evaluation suite:** Automated WER benchmarking across a test phrase library, comparing accuracy per layer and per vocab source
+- **Streaming LLM output:** Display tokens as they arrive to eliminate the perceived wait
+- **Whisper warm server:** Keep whisper-cpp running as a persistent process to eliminate the ~5s cold-start latency
 
-See [SPEC.md](./SPEC.md) for the full specification.
+See [SPEC.md](./SPEC.md) for the full specification and design learnings.
 
 ---
 

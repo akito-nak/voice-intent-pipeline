@@ -30,12 +30,12 @@ Voice-to-text pipelines — whether using the browser's native Web Speech API or
 
 | Problem | Example |
 |---|---|
-| **Phonetic substitution** | User says "set a timer for three minutes" → transcribed as "said a timer for free minutes" |
-| **Domain hallucination** | User says "Charizard" → transcribed as "Charles R" or "charred" |
+| **Phonetic substitution** | User says "set a timer for three minutes" → transcribed as "set a timer for free minutes" |
+| **Domain hallucination** | User says "Feraligatr" → transcribed as "feral gator" |
 
 The Web Speech API is particularly prone to these errors because it uses a general-purpose language model with no domain context. The result is that voice prompts become unreliable in production apps.
 
-This project builds a layered pipeline to solve both problems, starting with standard English, and documents every layer so engineers can understand *why* each one exists.
+This project builds a layered pipeline to solve both problems and documents every layer so engineers can understand *why* each one exists.
 
 ---
 
@@ -44,16 +44,15 @@ This project builds a layered pipeline to solve both problems, starting with sta
 ### Goals
 
 - **Learn** how browser Voice APIs, ASR, TTS, and local LLMs interact
-- **Solve** the ASR accuracy/hallucination problem for standard English
+- **Solve** the ASR accuracy/hallucination problem for standard English and domain vocabulary
 - **Explore** intent extraction on top of raw transcription
-- **Document** each pipeline layer so the repo is a useful reference
+- **Document** each pipeline layer and the reasoning behind every design decision
 - **Run entirely locally** — no cloud API keys, no latency from remote services
 - **Be a public reference repo** for engineers facing the same problems
 
 ### Non-Goals
 
 - This is not a production application
-- Non-standard vocabulary (Pokémon names, proper nouns) is **Phase 2**
 - No authentication, user accounts, or persistence
 - No mobile-native app (browser only)
 - No streaming LLM responses in Phase 1
@@ -70,24 +69,22 @@ This project builds a layered pipeline to solve both problems, starting with sta
 2. **Pipeline bypass** — test LLM intent correction without needing perfect voice input
 3. **Fallback** — users can correct a bad transcription before sending it onward
 
-The UI will make the relationship between text and voice explicit, showing the raw transcription and the corrected intent as separate stages.
+The UI makes the relationship between text and voice explicit, showing the raw transcription and the corrected intent as separate stages.
 
 ### How should the user trigger voice input?
 
-**Tap to start, tap to stop.** This is the standard pattern for longer-form voice input (used by Siri, voice messages, Google Assistant). Here is why it is the right choice:
+**Tap to start, tap to stop.** This is the standard pattern for longer-form voice input (used by Siri, voice messages, Google Assistant).
 
 | Approach | Pros | Cons |
 |---|---|---|
 | **Hold to record** | Feels immediate, like a walkie-talkie | Fatigue on long prompts, accidental cutoffs, bad mobile UX |
 | **Tap start / tap stop** ✓ | Natural for sentences, no fatigue, clear visual state | Requires deliberate stop action |
 
-The record button will have three visual states: **idle**, **recording** (pulsing), and **processing**.
+The record button has three visual states: **idle**, **recording** (pulsing red), and **processing**.
 
 ---
 
 ## 4. How the Voice Pipeline Works
-
-Understanding the full pipeline is the core goal of this project. Here is how all the pieces connect.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -98,14 +95,14 @@ Understanding the full pipeline is the core goal of this project. Here is how al
 │      ▼                                                              │
 │  ┌─────────────────────────────┐                                   │
 │  │  Layer 1: Audio Capture     │  MediaRecorder API (browser)      │
-│  │  getUserMedia()             │  Raw PCM/WebM audio stream        │
+│  │  getUserMedia()             │  Raw PCM/WebM audio blob          │
 │  └──────────────┬──────────────┘                                   │
 │                 │                                                    │
 │                 ▼                                                    │
 │  ┌─────────────────────────────┐                                   │
-│  │  Layer 2: ASR               │  Web Speech API (built-in)        │
-│  │  SpeechRecognition API      │  OR Whisper (local, more accurate)│
-│  │                             │  → Raw transcript text            │
+│  │  Layer 2: ASR               │  Web Speech API  → fast, cloud    │
+│  │                             │  OR Whisper      → slower, local  │
+│  │                             │  → raw transcript + confidence    │
 │  └──────────────┬──────────────┘                                   │
 │                 │                                                    │
 │                 ▼                                                    │
@@ -116,18 +113,22 @@ Understanding the full pipeline is the core goal of this project. Here is how al
 │                 │                                                    │
 │                 ▼                                                    │
 │  ┌─────────────────────────────┐                                   │
-│  │  Layer 4: LLM Intent        │  Ollama (local LLM)               │
-│  │  Correction                 │  Fixes transcription errors,      │
-│  │                             │  extracts user intent             │
+│  │  Layer 3.5: Vocab Hints     │  Fetch domain words from          │
+│  │                             │  Static / PokeAPI / RAG phonetic  │
+│  │                             │  → inject into LLM prompt         │
 │  └──────────────┬──────────────┘                                   │
 │                 │                                                    │
 │                 ▼                                                    │
 │  ┌─────────────────────────────┐                                   │
-│  │  Layer 5: Intent Output     │  Structured JSON with:            │
-│  │                             │  - raw transcript                 │
-│  │                             │  - corrected text                 │
-│  │                             │  - intent / meaning               │
-│  │                             │  - confidence score               │
+│  │  Layer 4: LLM Correction    │  Ollama (local LLM)               │
+│  │                             │  Fixes errors, extracts intent    │
+│  └──────────────┬──────────────┘                                   │
+│                 │                                                    │
+│                 ▼                                                    │
+│  ┌─────────────────────────────┐                                   │
+│  │  Layer 5: Intent Output     │  Structured JSON:                 │
+│  │                             │  corrected, intent, changes,      │
+│  │                             │  confidence, vocabHints           │
 │  └─────────────────────────────┘                                   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -136,27 +137,34 @@ Understanding the full pipeline is the core goal of this project. Here is how al
 
 #### Layer 1 — Audio Capture (`MediaRecorder API`)
 
-The browser provides `getUserMedia()` to access the microphone and `MediaRecorder` to record audio chunks. This layer produces raw audio data (WebM/Opus by default on Chrome) and is completely separate from any speech recognition.
+The browser provides `getUserMedia()` to access the microphone and `MediaRecorder` to record audio chunks. This layer produces raw audio (WebM/Opus by default in Chrome) and is completely separate from speech recognition.
 
-**Key concepts:**
-- `getUserMedia({ audio: true })` — requests microphone permission
-- `MediaRecorder` — records in chunks, fires `ondataavailable` events
-- Audio is collected into a `Blob` and can be replayed or sent to a server
+```js
+const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+const recorder = new MediaRecorder(stream);
+const chunks = [];
+recorder.ondataavailable = (e) => chunks.push(e.data);
+recorder.onstop = () => {
+  const blob = new Blob(chunks, { type: 'audio/webm' });
+  // blob is now ready to send to Whisper or play back
+};
+```
+
+**Key insight:** `MediaRecorder` and `SpeechRecognition` are two completely separate browser APIs. You run both in parallel — one captures raw audio for Whisper, the other transcribes in real-time via Google's servers.
 
 #### Layer 2 — ASR (Automatic Speech Recognition)
 
-This is where audio becomes text. Two options exist:
-
 **Option A: Web Speech API (`SpeechRecognition`)**
 - Built into Chrome and Edge — no install required
-- Uses Google's cloud ASR under the hood (even though it feels local)
-- Fast (~200–500ms), but general-purpose — prone to errors on uncommon words
+- Sends audio to Google's servers under the hood (not actually local)
+- Fast (~200–500ms), good for general English
 - Provides a `confidence` score per result
+- Fails on domain vocabulary (Pokémon names, uncommon proper nouns)
 
 ```js
 const recognition = new webkitSpeechRecognition();
 recognition.continuous = false;
-recognition.interimResults = true; // shows partial results as user speaks
+recognition.interimResults = true;
 recognition.lang = 'en-US';
 recognition.onresult = (event) => {
   const transcript = event.results[0][0].transcript;
@@ -164,88 +172,78 @@ recognition.onresult = (event) => {
 };
 ```
 
-**Option B: Whisper (via `whisper.cpp` or `faster-whisper`)**
-- Open-source model from OpenAI, runs entirely locally
-- Significantly more accurate than Web Speech API for tricky phrases
-- Higher latency (~500ms–2s depending on model size and hardware)
-- Runs well on M1 Pro via Metal acceleration
-- Exposed as a local HTTP endpoint by the Node.js backend
+**Option B: Whisper (`whisper.cpp`)**
+- Open-source model from OpenAI, runs entirely locally via Metal on M1
+- More accurate on domain vocabulary and proper nouns
+- ~5 seconds slower than Web Speech API due to cold-start cost (model loaded from disk each call)
+- Audio must be converted from WebM to WAV 16kHz mono before processing
 
-> **Phase 1 uses Web Speech API as the primary ASR** to keep setup minimal, with a toggle to switch to a local Whisper endpoint for comparison.
+**The cold-start problem with Whisper:** Every request spawns a new `whisper-cli` process which reads the model weights from disk. The model load time (~3–4s) dominates the total latency. The actual inference on a short phrase is fast once the model is loaded. The fix is a warm server mode — keep the process alive between requests.
 
 #### Layer 3 — Confidence Filter
 
 ASR results include a confidence score (0.0–1.0). Before sending to the LLM:
-- If `confidence >= 0.75` → proceed to LLM
-- If `confidence < 0.75` → display a warning and offer the user a chance to re-record or manually correct the transcript
+- If `confidence >= threshold` → proceed
+- If `confidence < threshold` → display a warning and offer the user a chance to re-record
 
-This prevents the LLM from wasting time trying to correct deeply garbled audio.
+This prevents the LLM from wasting time trying to correct deeply garbled audio. The threshold is configurable in the UI — users with accents or in noisy environments may need a lower threshold.
 
-#### Layer 4 — LLM Intent Correction (`Ollama`)
+**Important:** Whisper does not provide a per-utterance confidence score. When Whisper is selected, the app sets confidence to `1.0` and bypasses the threshold check.
 
-This is the most important layer for solving the hallucination problem. The raw ASR transcript is sent to a locally-running LLM with a prompt that:
+#### Layer 3.5 — Vocabulary Hints
 
-1. **Corrects transcription errors** — e.g., "free minutes" → "three minutes"
-2. **Infers intent** — what did the user actually mean?
-3. **Returns structured JSON** — so the app can work with the result programmatically
+This layer is the solution to domain hallucination. Before sending to the LLM, the app fetches words from a domain vocabulary source and injects them into the prompt as hints:
+
+```
+Known vocabulary for this domain. The transcript may contain phonetic
+approximations of these words — including cases where multiple transcript
+words collapse into a single vocabulary word (e.g. "pick a chew" → "Pikachu"):
+Draco Meteor, Feraligatr
+
+Input transcript: "I want to use feral gator and draco meteor"
+```
+
+See [Section 7](#7-the-accuracy-layers) for full detail on the three vocab sources.
+
+#### Layer 4 — LLM Intent Correction
+
+The LLM receives the transcript (plus any vocab hints) and:
+1. Fixes transcription errors caused by phonetic substitution
+2. Infers intent — what the user actually meant to do
+3. Returns structured JSON
 
 **Why a local LLM?**
 - Free to run, no API keys
-- Runs on M1 Pro with Ollama
-- Fast enough for interactive use with small models (3B–7B parameters)
-- Keeps user data on-device
+- Runs on M1 Pro via Ollama
+- Small models (3B–7B params) are fast enough for interactive use
+- User data stays on-device
 
-**Example prompt:**
-```
-You are a voice transcription corrector. The following text was produced by 
-a speech-to-text system and may contain errors. 
+**Prompt design matters enormously.** The system prompt includes:
+- A strict rule list ("ONLY fix phonetic errors", "do NOT change proper nouns")
+- Few-shot examples covering each class of error
+- The structured JSON output format
 
-Raw transcript: "can you set a timer for free minutes"
-
-Fix any transcription errors, then state what the user intended to do.
-Return JSON only:
-{
-  "corrected": "can you set a timer for three minutes",
-  "intent": "Set a timer for 3 minutes",
-  "changes": ["free → three"],
-  "confidence": 0.95
-}
-```
+The LLM's self-reported confidence is not always reliable — see the WER safety check in Section 7.
 
 #### Layer 5 — Intent Output
 
-The final output shown to the user is a structured breakdown of what happened at each stage, making the pipeline transparent and educational.
+The final output shown to the user is a structured breakdown of every stage, making the pipeline fully transparent. TTS speaks the detected intent back as confirmation.
 
 ---
 
-### TTS (Text-to-Speech) — Where It Fits
+### TTS (Text-to-Speech)
 
-TTS is the *reverse* pipeline: text → audio. It is used in this app for:
-1. **Playback confirmation** — speak back the corrected intent so the user can confirm it was understood
-2. **Error prompts** — "I didn't catch that clearly, please try again"
-
-The browser's `SpeechSynthesis` API handles this for free:
+TTS is the reverse pipeline: text → audio. Used for:
+1. **Confirmation** — speak back the corrected intent so the user can verify it
+2. **Error feedback** — audio cue when the pipeline fails
 
 ```js
-const utterance = new SpeechSynthesisUtterance("Set a timer for three minutes");
+const utterance = new SpeechSynthesisUtterance("Use Feraligatr with Draco Meteor");
 utterance.lang = 'en-US';
-utterance.rate = 1.0;
 window.speechSynthesis.speak(utterance);
 ```
 
-No installation required, runs entirely in the browser.
-
----
-
-### Intent vs. Transcription — The Distinction
-
-| Term | Definition | Example |
-|---|---|---|
-| **Transcript** | The literal words the ASR heard | `"can you set a timer for free minutes"` |
-| **Corrected text** | Transcript with errors fixed | `"can you set a timer for three minutes"` |
-| **Intent** | What the user meant to accomplish | `"Set a 3-minute timer"` |
-
-Intent extraction is the job of the LLM. It moves beyond literal words to understand meaning — "three minutes" and "180 seconds" and "three minute timer" all share the same intent.
+**Gotcha:** `speechSynthesis.getVoices()` returns an empty array until the browser has loaded its voice list. You need to listen for the `voiceschanged` event before selecting a voice.
 
 ---
 
@@ -255,53 +253,49 @@ Intent extraction is the job of the LLM. It moves beyond literal words to unders
 ┌────────────────────────────────────────────────────┐
 │                   Browser (Frontend)               │
 │                                                    │
-│  ┌──────────────┐     ┌──────────────────────────┐ │
-│  │  Voice Input │     │     Text Input           │ │
-│  │  (MediaRec.) │     │     (fallback/debug)      │ │
-│  └──────┬───────┘     └────────────┬─────────────┘ │
-│         │                          │               │
-│         └──────────┬───────────────┘               │
-│                    ▼                               │
-│         ┌──────────────────┐                       │
-│         │  Web Speech API  │ ← Layer 2 (primary)   │
-│         │  SpeechRecognit. │                       │
-│         └────────┬─────────┘                       │
-│                  │ raw transcript + confidence      │
-│                  ▼                                 │
-│         ┌──────────────────┐                       │
-│         │  Pipeline UI     │                       │
-│         │  (shows stages)  │                       │
-│         └────────┬─────────┘                       │
-└──────────────────┼─────────────────────────────────┘
-                   │ POST /api/correct
+│  MediaRecorder ─────────────────────────────────┐  │
+│  (raw audio blob)                               │  │
+│                                                 │  │
+│  Web Speech API ────────────────────────────┐   │  │
+│  (transcript + confidence)                  │   │  │
+│                                             ▼   ▼  │
+│                                      main.ts router│
+│                                             │      │
+│                                  ASR mode? │      │
+│                              Web Speech ───┘      │
+│                              Whisper ─────────────┼─→ POST /api/whisper
+│                                             │      │
+│                                             ▼      │
+│                                   POST /api/correct│
+└─────────────────────────────────────────────────── ┘
+                   │
                    ▼
 ┌────────────────────────────────────────────────────┐
 │                 Node.js Backend                    │
 │                                                    │
-│  ┌─────────────────────────────────────────────┐  │
-│  │  Express API Server                         │  │
-│  │                                             │  │
-│  │  POST /api/correct  →  Ollama REST API      │  │
-│  │  POST /api/whisper  →  Whisper (opt. Phase2)│  │
-│  │  GET  /api/health   →  status check         │  │
-│  └─────────────────────────────────────────────┘  │
+│  POST /api/correct                                 │
+│    → vocab/index.ts  (fetch + filter hints)        │
+│    → prompts.ts      (build prompt with hints)     │
+│    → ollama.ts       (call Ollama, WER check)      │
+│                                                    │
+│  POST /api/whisper                                 │
+│    → whisper.ts      (ffmpeg convert, whisper-cli) │
+│                                                    │
+│  GET  /api/health   → check Ollama + list models   │
 └────────────────────────────────────────────────────┘
-                   │
-                   ▼
-┌────────────────────────────────────────────────────┐
-│               Ollama (local)                       │
-│               llama3.2:3b or mistral:7b            │
-│               REST API at localhost:11434           │
-└────────────────────────────────────────────────────┘
+         │                        │
+         ▼                        ▼
+  Ollama (port 11434)      whisper-cli (subprocess)
+  gemma4:e4b               ggml-base.en.bin
 ```
 
 ### Why a Backend?
 
-The LLM correction call goes through a Node.js backend (not directly from the browser to Ollama) for three reasons:
+The LLM call goes through a Node.js backend rather than directly from the browser for three reasons:
 
-1. **CORS** — Ollama's local server does not accept browser requests by default
+1. **CORS** — Ollama's server does not accept browser requests by default
 2. **Prompt engineering** — system prompts live on the server, not in client-side JS
-3. **Future extensibility** — Whisper integration, logging, and domain vocabulary lists live here
+3. **Whisper** — spawning a subprocess and doing file I/O requires Node.js, not a browser
 
 ---
 
@@ -309,73 +303,174 @@ The LLM correction call goes through a Node.js backend (not directly from the br
 
 | Layer | Technology | Reason |
 |---|---|---|
-| **Frontend** | Vanilla HTML + CSS + TypeScript (no framework) | Barebones, nothing hidden, everything visible |
-| **Build tool** | Vite | Fast dev server, TypeScript out of the box, minimal config |
-| **Backend** | Node.js + TypeScript + Express | Same language as frontend, simple REST API, easy Ollama integration |
-| **ASR (primary)** | Web Speech API (`SpeechRecognition`) | Zero install, built into Chrome/Edge, good enough for Phase 1 |
-| **ASR (secondary)** | Whisper via `whisper.cpp` (togglable) | Higher accuracy, local, M1-optimized |
-| **LLM** | Ollama (`llama3.2:3b` default, `mistral:7b` optional) | Free, local, M1 Metal acceleration, simple REST API |
-| **TTS** | Web Speech Synthesis API | Zero install, built into all browsers |
-| **Styling** | Plain CSS with CSS variables | No dependencies, responsive by default |
-
-### Why TypeScript over Python?
-
-This is a browser-first application. The core APIs (`MediaRecorder`, `SpeechRecognition`, `SpeechSynthesis`) are JavaScript/browser APIs. Using TypeScript for both frontend and backend means:
-- One language throughout
-- No context switching
-- Type safety across the API boundary (shared types)
-- Direct browser API access without a Python-to-browser bridge
-
-Python would add value *only* if Whisper becomes the primary ASR layer (Phase 2), and even then it can be isolated as a microservice.
+| Frontend | Vanilla HTML + CSS + TypeScript | Nothing hidden, every line is visible |
+| Build tool | Vite | Fast dev server, TypeScript out of the box, proxy support |
+| Backend | Node.js + TypeScript + Express | Same language as frontend, simple REST API |
+| ASR (primary) | Web Speech API | Zero install, built into Chrome/Edge |
+| ASR (secondary) | whisper.cpp | Higher accuracy, fully local, M1 Metal via Metal |
+| LLM | Ollama | Free, local, M1 Metal acceleration |
+| Phonetic matching | `natural` (DoubleMetaphone) | Converts words to phonetic codes for similarity matching |
+| TTS | Web Speech Synthesis API | Zero install, built into all browsers |
+| Styling | Plain CSS with CSS variables | No dependencies |
 
 ### Recommended Ollama Models (M1 Pro 32GB)
 
-| Model | Size | RAM Usage | Speed | Best For |
-|---|---|---|---|---|
-| `llama3.2:3b` | 2GB | ~4GB | ~50–100 tok/s | Low latency, Phase 1 |
-| `mistral:7b` | 4GB | ~6GB | ~30–60 tok/s | Better reasoning |
-| `llama3.1:8b` | 5GB | ~7GB | ~25–50 tok/s | Highest quality |
+| Model | Size | Speed | Best For |
+|---|---|---|---|
+| `gemma4:e4b` | ~3GB | Fast | Best instruction following, default |
+| `mistral:7b-instruct-q4_K_M` | 4.4GB | Medium | Strong alternative |
+| `phi4-mini:3.8b` | 2.5GB | Fastest | Low latency, less reliable on rules |
 
-**Start with `llama3.2:3b`** for low latency. The UI will have a model selector to compare results.
+**Observed behaviour:** `phi4-mini` frequently ignores the "do not change proper nouns" instruction and produces hallucinated intent descriptions. `gemma4:e4b` and `mistral:7b` follow the rules reliably. Use small models for speed experiments, not for production-like accuracy.
 
 ---
 
 ## 7. The Accuracy Layers
 
-This is the core thesis of the project: accuracy improves as you add layers. Each layer is toggleable in the UI so you can see the difference.
-
-```
-Layer 1 (Audio)     → Raw audio from mic
-Layer 2 (ASR)       → Raw text, may have errors
-Layer 3 (Confidence)→ Low confidence triggers re-record
-Layer 4 (LLM)       → Corrected text + intent
-Layer 5 (Output)    → Structured result
-```
-
 ### Why ASR Hallucinates
 
-The Web Speech API uses a general acoustic model trained on broad English. When it encounters a phoneme sequence it hasn't seen in a clear context, it substitutes the closest match from its training data. This is not random noise — it is a systematic bias toward common words.
-
-**Common failure patterns:**
+The Web Speech API uses a general acoustic model trained on broad English. When it encounters a phoneme sequence it cannot confidently resolve, it substitutes the statistically most likely word — not the correct one. This is not random noise — it is systematic bias toward common words.
 
 | What user said | What ASR heard | Why |
 |---|---|---|
 | "three" | "free" | Phonetically similar in some accents |
 | "write code" | "right code" | Homophones |
-| "Ollama" | "a llama" | Unknown proper noun split into known words |
-| "neural net" | "new URL net" | Partial match on "neural" |
+| "neural net" | "new URL net" | Partial phonetic match |
+| "Feraligatr" | "feral gator" | Unknown proper noun split into common words |
+| "Pikachu" | "pick a chew" | Each syllable matched to nearest English word |
 
 ### How the LLM Corrects This
 
 The LLM has two advantages over raw ASR:
-1. **Context understanding** — it knows "free minutes" in the context of timers likely means "three minutes"
-2. **Common error patterns** — it can be prompted with known ASR error patterns
+1. **Context** — "free minutes" in a timer context almost certainly means "three minutes"
+2. **Instruction following** — it can be given explicit rules like "do not change proper nouns"
 
-The correction prompt includes:
-- The raw transcript
-- The domain context (what kind of app this is)
-- Examples of common ASR errors (few-shot prompting)
-- Instruction to return structured JSON
+#### The overcorrection problem
+
+LLMs can overcorrect — changing words that were correct to begin with. Observed example during development: "corn muffin" was corrected to "carnation muffin". The LLM saw an unusual phrase and substituted something more familiar.
+
+The fix is a **Word Error Rate (WER) safety check** on every response:
+
+```
+WER = number of words changed ÷ total words in original transcript
+```
+
+If the LLM changed more than 40% of the words, its confidence score is capped at 50% — signalling to the UI that the correction is uncertain.
+
+**Important caveat:** The WER cap is skipped when vocabulary hints are provided. Domain corrections (e.g. "feral gator" → "Feraligatr") legitimately change word count and position, which would incorrectly trip the WER threshold.
+
+#### The "silent change" problem
+
+A subtler bug: the LLM sometimes modifies the transcript but reports an empty `changes` array ("no changes made"). The backend includes a safety check: if `changes` is empty but `corrected !== transcript`, the original transcript is restored. Never trust the LLM's self-report — verify it.
+
+### Vocabulary Hint System
+
+The vocab system solves domain hallucination by fetching relevant domain words before the LLM call and injecting them into the prompt. Three sources are available.
+
+#### Source 1: Static
+
+Reads a curated word list from `backend/data/vocab.json`. Useful when you know exactly what domain vocabulary your users will say.
+
+#### Source 2: PokeAPI
+
+Fetches all Pokémon names, move names, and item names from the public PokeAPI (cached in memory for 24 hours). Before injecting hints into the prompt, the list is filtered down to only the words that are plausibly relevant to the transcript — otherwise you would be sending thousands of names to the LLM.
+
+**The filtering algorithm (two-pass word claiming):**
+
+A naive substring filter ("keep any vocab word that appears in the transcript") produces too much noise. For example, searching for "draco meteor" in the transcript causes both "Draco Meteor" (correct) and "Meteorite", "Dracozolt", "Dracovish" (noise) to match.
+
+The solution uses two passes:
+
+**Pass 1 — Multi-word terms:**
+A multi-word vocab term (e.g. "Draco Meteor") only matches if ALL of its component words are present in the transcript as exact word matches. This prevents "Meteor Mash" from matching just because "meteor" is in the transcript.
+
+When a multi-word term matches, its component words are marked as **claimed** — they can no longer be used to match single-word terms.
+
+**Pass 2 — Single-word terms:**
+A single-word vocab term (e.g. "Feraligatr") matches if unclaimed transcript words have sufficient combined character coverage of the vocab word (≥45%). For example, "feral"(5 chars) alone covers 50% of "feraligatr"(10 chars) — enough to include it. But "draco"(5 chars) cannot match "Dracozolt"(9 chars) because "draco" was already claimed by "Draco Meteor".
+
+```typescript
+// Pass 1: multi-word matching + claiming
+const claimedWords = new Set<string>();
+for (const word of words) {
+  const parts = word.toLowerCase().split(' ');
+  if (parts.length < 2) continue;
+  const allPartsMatch = parts.every(p => transcriptWords.some(tw => p === tw));
+  if (allPartsMatch) {
+    parts.forEach(p => {
+      const matched = transcriptWords.find(tw => p === tw);
+      if (matched) claimedWords.add(matched);
+    });
+  }
+}
+
+// Pass 2: single-word matching using only unclaimed transcript words
+const unclaimedWords = transcriptWords.filter(tw => !claimedWords.has(tw));
+for (const word of words) {
+  if (word.includes(' ')) continue;
+  const matching = unclaimedWords.filter(tw => word.toLowerCase().includes(tw));
+  const coverage = matching.reduce((n, tw) => n + tw.length, 0) / word.length;
+  if (coverage >= 0.45) { /* include this word */ }
+}
+```
+
+#### Source 3: RAG (Phonetic)
+
+RAG stands for Retrieval-Augmented Generation — retrieving relevant context before generation. The "retrieval" here is phonetic rather than semantic.
+
+**Why semantic embeddings don't work for this problem:**
+The original RAG implementation used ChromaDB with `nomic-embed-text` embeddings. The idea was that the vector for "feral gator" would be close to the vector for "Feraligatr". It isn't. Embedding models capture *meaning*, not *sound*. "Feral gator" (a wild alligator) and "Feraligatr" (a Pokémon) are semantically unrelated. The query returned completely wrong results.
+
+**The right tool: phonetic encoding**
+
+[Double Metaphone](https://en.wikipedia.org/wiki/Metaphone#Double_Metaphone) is an algorithm that converts a word to a phonetic fingerprint — a string that represents how the word sounds, ignoring spelling. Words that sound similar produce the same or similar codes.
+
+Examples:
+| Word | Double Metaphone code |
+|---|---|
+| "pick" | PK |
+| "Pikachu" (first syllable) | PK |
+| "chew" | X (CH sound) |
+| "Pikachu" (full) | PKX |
+
+The RAG index works like this:
+
+1. **Build phase:** fetch all Pokémon names, compute Double Metaphone code for each component word, store as `{ code → [vocabWords] }` in memory
+2. **Query phase:** for each word in the transcript, compute its code, then find vocab entries where one code is a prefix of the other
+
+The prefix check (`entry.code.startsWith(twCode) || twCode.startsWith(entry.code)`) handles the case where a transcript word is a partial phonetic match — "pick" (PK) is a prefix of "pikachu"'s code (PKX).
+
+**What RAG catches that PokeAPI substring matching misses:**
+- "pick a chew" → Pikachu (ASR replaces syllables with similar English words)
+- "bulk a saw" → Bulbasaur (no substring overlap with the transcript words)
+
+**What it still misses:** Cases where ASR produces a phonetically distant substitution, or where the Metaphone algorithm itself produces a bad encoding for a Japanese-origin name.
+
+### Prompt Engineering for Vocab Corrections
+
+When hints are provided, the LLM needs a specific instruction to handle multi-word → single-word corrections. Without it, the LLM treats each word independently and may apply standard English corrections instead of recognising a phonetic split.
+
+The key addition to `buildCorrectionPrompt`:
+
+```
+Known vocabulary for this domain. The transcript may contain phonetic
+approximations of these words — including cases where multiple transcript
+words collapse into a single vocabulary word (e.g. "pick a chew" → "Pikachu")
+```
+
+And the few-shot example that demonstrated the pattern:
+
+```json
+Input (with hints: Pikachu, Raichu): "I want to catch pick a chew"
+Output:
+{
+  "corrected": "I want to catch Pikachu",
+  "changes": ["pick a chew → Pikachu"],
+  "confidence": 0.92
+}
+```
+
+Without this example, `gemma4:e4b` corrected "chew" to "choice" (standard English correction) and ignored the Pikachu hint entirely.
 
 ---
 
@@ -385,37 +480,27 @@ The correction prompt includes:
 
 ```
 ┌─────────────────────────────────────────────────┐
+│  Voice Prompt Explorer                          │
 │                                                 │
-│   Voice Prompt Explorer                        │
-│   ─────────────────────                        │
+│  ┌─────────────────────────────────────────┐   │
+│  │  Type or speak your prompt...           │   │ ← Textarea
+│  └─────────────────────────────────────────┘   │
 │                                                 │
-│   ┌───────────────────────────────────────┐     │
-│   │  Type or speak your prompt...         │     │  ← Textarea (editable)
-│   │                                       │     │
-│   └───────────────────────────────────────┘     │
+│  [ 🎙 Start Recording ]  [ ▶ Submit ] [Clear]  │
 │                                                 │
-│   [ 🎙 Start Recording ]   [ ▶ Submit ]         │  ← Buttons
+│  ─────────────────────────────────────────────  │
+│  Pipeline Stages                                │
 │                                                 │
-│   ─────────────────────────────────────────     │
+│  ① Raw Transcript     "feral gator"  conf: 95% │
+│  ② Vocabulary Hints   Feraligatr, Draco Meteor  │
+│  ③ Corrected Text     "Feraligatr"  changes: 1 │
+│  ④ Intent             Use Feraligatr  conf: 98%│
 │                                                 │
-│   Pipeline Stages                              │
+│  [ 🔊 Speak Intent ]                            │
 │                                                 │
-│   ① Raw Transcript      "can you set a timer    │
-│                          for free minutes"      │
-│                          Confidence: 0.82       │
-│                                                 │
-│   ② Corrected Text      "can you set a timer    │
-│                          for three minutes"     │
-│                          Changes: free → three  │
-│                                                 │
-│   ③ Intent              Set a 3-minute timer    │
-│                          Confidence: 0.97       │
-│                                                 │
-│   [ 🔊 Speak Intent ]                           │  ← TTS playback
-│                                                 │
-│   ─────────────────────────────────────────     │
-│   Settings                                     │
-│   ASR: [Web Speech API ▼]  Model: [llama3.2:3b ▼] │
+│  Settings                                       │
+│  ASR: [Web Speech ▼]  Vocab: [PokeAPI ▼]       │
+│  Model: [gemma4:e4b ▼]  Threshold: [0.75]      │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -423,18 +508,10 @@ The correction prompt includes:
 
 | State | Appearance | Behavior |
 |---|---|---|
-| **Idle** | Solid microphone icon, neutral color | Click to start recording |
-| **Recording** | Pulsing red ring animation | Click to stop recording |
+| **Idle** | Neutral colour | Click to start recording |
+| **Recording** | Pulsing red ring | Click to stop recording |
 | **Processing** | Spinner, disabled | Waiting for ASR + LLM |
-| **Error** | Red X, error message below | Click to retry |
-
-### Design Principles
-
-- **Responsive** — single-column layout, works on any screen width
-- **Barebones** — no icons library, no UI framework, minimal CSS
-- **Transparent** — every pipeline stage is visible, not hidden
-- **Dark mode** — CSS variables for easy theming, default dark
-- **No page reloads** — single-page application, all state in memory
+| **Error** | Red, error message | Click to retry |
 
 ### CSS Variable Palette
 
@@ -445,9 +522,9 @@ The correction prompt includes:
   --border:      #2a2a2a;
   --text:        #e8e8e8;
   --text-muted:  #888;
-  --accent:      #4f8ef7;   /* blue — idle/active */
-  --danger:      #e55353;   /* red — recording */
-  --success:     #4caf7d;   /* green — intent confirmed */
+  --accent:      #4f8ef7;
+  --danger:      #e55353;
+  --success:     #4caf7d;
 }
 ```
 
@@ -455,55 +532,53 @@ The correction prompt includes:
 
 ## 9. API Design
 
-All endpoints are served by the Express backend at `http://localhost:3001`.
-
 ### `POST /api/correct`
-
-Sends a raw ASR transcript to the local LLM for correction and intent extraction.
 
 **Request:**
 ```json
 {
-  "transcript": "can you set a timer for free minutes",
-  "confidence": 0.82,
-  "model": "llama3.2:3b"
+  "transcript": "I want to use feral gator and draco meteor",
+  "confidence": 0.95,
+  "model": "gemma4:e4b",
+  "vocabSource": "pokeapi"
 }
 ```
 
 **Response:**
 ```json
 {
-  "corrected": "can you set a timer for three minutes",
-  "intent": "Set a 3-minute timer",
-  "changes": ["free → three"],
-  "confidence": 0.97,
-  "latency_ms": 312
+  "corrected": "I want to use Feraligatr and Draco Meteor",
+  "intent": "Use Feraligatr with Draco Meteor",
+  "changes": ["feral gator → Feraligatr", "draco meteor → Draco Meteor"],
+  "confidence": 0.98,
+  "latency_ms": 8551,
+  "vocabHints": ["Draco Meteor", "Feraligatr"],
+  "vocabSource": "pokeapi"
 }
 ```
 
 **Error response:**
 ```json
-{
-  "error": "Ollama not running",
-  "code": "OLLAMA_UNAVAILABLE"
-}
+{ "error": "Ollama not running", "code": "OLLAMA_UNAVAILABLE" }
 ```
 
 ---
 
-### `POST /api/whisper` *(Phase 2)*
+### `POST /api/whisper`
 
-Sends raw audio to a local Whisper instance for higher-accuracy transcription.
+**Request:** `multipart/form-data` with an `audio` field containing a WebM blob
 
-**Request:** `multipart/form-data` with audio blob
+**How it works internally:**
+1. multer stores the blob in memory (no temp files at this stage)
+2. ffmpeg converts the WebM to WAV (16kHz, mono) and writes to a temp file
+3. `whisper-cli` is called as a subprocess on that temp file
+4. The temp file is cleaned up in a `finally` block regardless of success or failure
 
 **Response:**
 ```json
 {
-  "transcript": "can you set a timer for three minutes",
-  "confidence": 0.94,
-  "language": "en",
-  "latency_ms": 890
+  "transcript": "I want to use Feraligatr and Draco Meteor",
+  "latency_ms": 4230
 }
 ```
 
@@ -511,14 +586,12 @@ Sends raw audio to a local Whisper instance for higher-accuracy transcription.
 
 ### `GET /api/health`
 
-Returns the status of Ollama and available models.
-
 **Response:**
 ```json
 {
   "ollama": true,
-  "models": ["llama3.2:3b", "mistral:7b"],
-  "default_model": "llama3.2:3b"
+  "models": ["gemma4:e4b", "mistral:7b-instruct-q4_K_M"],
+  "default_model": "gemma4:e4b"
 }
 ```
 
@@ -526,107 +599,145 @@ Returns the status of Ollama and available models.
 
 ## 10. Implementation Phases
 
-### Phase 1 — Foundation (Start Here)
+### Phase 1 — Foundation ✅
 
 **Goal:** Working voice pipeline with Web Speech API + LLM correction
 
-- [ ] Project scaffolding (Vite + TypeScript frontend, Express + TypeScript backend)
-- [ ] Microphone permission and `MediaRecorder` setup
-- [ ] Web Speech API integration (start/stop, interim results, confidence)
-- [ ] Record button with idle/recording/processing states
-- [ ] Text input as fallback and debug tool
-- [ ] `POST /api/correct` endpoint calling Ollama
-- [ ] Pipeline stages UI (raw → corrected → intent)
-- [ ] TTS playback of corrected intent
-- [ ] `GET /api/health` status check on startup
-- [ ] Model selector in settings panel
-- [ ] README with setup instructions
+- [x] Project scaffolding (Vite + TypeScript frontend, Express + TypeScript backend)
+- [x] Microphone permission and `MediaRecorder` setup
+- [x] Web Speech API integration (start/stop, interim results, confidence)
+- [x] Record button with idle/recording/processing states
+- [x] Text input as fallback and debug tool
+- [x] `POST /api/correct` endpoint calling Ollama
+- [x] Pipeline stages UI (raw → corrected → intent)
+- [x] TTS playback of corrected intent
+- [x] `GET /api/health` status check on startup
+- [x] Model selector in settings panel
+- [x] LLM overcorrection safety: WER check + silent-change detection
+- [x] README with setup instructions
 
-**Success criteria:** User can speak, see a corrected transcript, and hear the intent spoken back.
+**Key learnings from Phase 1:**
+- The LLM's self-reported confidence is not reliable — verify changes independently with WER
+- Few-shot examples in the system prompt are critical — without them the LLM ignores your rules
+- LLMs can overcorrect as readily as under-correct. A WER threshold catches gross overcorrections but won't catch subtle ones
+- `gemma4:e4b` outperformed all other tested models on instruction following at comparable latency
 
 ---
 
-### Phase 2 — Whisper Integration
+### Phase 2 — Whisper Integration ✅
 
 **Goal:** Compare Web Speech API vs Whisper accuracy on the same input
 
-- [ ] `whisper.cpp` or `faster-whisper` running locally as a subprocess
-- [ ] `POST /api/whisper` endpoint
-- [ ] ASR toggle in UI (Web Speech vs Whisper)
-- [ ] Side-by-side comparison view
-- [ ] Latency comparison metrics
+- [x] `whisper.cpp` running locally as a subprocess via `whisper-cli`
+- [x] ffmpeg conversion from WebM (browser output) to WAV 16kHz mono (Whisper input)
+- [x] `POST /api/whisper` endpoint with multer file handling
+- [x] ASR toggle in UI (Web Speech vs Whisper)
+- [x] Latency display
 
-**Success criteria:** User can toggle between ASR engines and see accuracy differences on the same recording.
+**Key learnings from Phase 2:**
+
+**The audio format mismatch problem:** Browsers record audio as WebM/Opus by default. Whisper only accepts WAV. There is no native Node.js API to decode audio — you need ffmpeg as an external dependency. Always convert: `ffmpeg -i input.webm -ar 16000 -ac 1 output.wav`.
+
+**Whisper cold-start latency:** Spawning a new `whisper-cli` process for every request means loading model weights from disk each time. This adds ~3–4 seconds of startup cost to every transcription. The actual inference is fast — the load time dominates. The proper solution is a warm server mode where `whisper-cpp`'s built-in HTTP server is kept running and requests are sent to it instead.
+
+**Comparing the two ASR engines:**
+
+| | Web Speech API | Whisper (base.en) |
+|---|---|---|
+| Latency | ~0.5s | ~5s (cold start) |
+| General English | ✅ Excellent | ✅ Excellent |
+| Domain vocabulary | ❌ Struggles | ✅ More reliable |
+| Privacy | ❌ Sends to Google | ✅ Fully local |
+| Offline | ❌ Requires internet | ✅ Works offline |
+| Setup | Zero install | brew + model download |
+
+**The `onFinal` timing issue:** `MediaRecorder` fires `onstop` and `SpeechRecognition` fires `onresult` asynchronously and independently. In Web Speech mode, the transcript arrives before the audio blob is ready. In Whisper mode, you need the audio blob but not the transcript. The solution: collect both, then route based on the selected ASR mode when the recording completes.
 
 ---
 
-### Phase 3 — Domain Vocabulary (Non-Standard English)
+### Phase 3 — Domain Vocabulary ✅
 
-**Goal:** Solve the Pokémon / proper noun problem
+**Goal:** Solve the Pokémon / proper noun problem through vocabulary hint injection
 
-- [ ] Vocabulary hint system — provide domain word lists to the LLM
-- [ ] Custom ASR grammar hints via `SpeechGrammarList` (where supported)
-- [ ] Phonetic similarity matching for unknown words
-- [ ] Vocabulary file format and UI for adding custom words
-- [ ] Benchmark suite: record the same phrase with/without vocabulary hints
+- [x] Vocab source abstraction: `VocabSource` type, `getVocab()` router, shared `VocabResult` shape
+- [x] Static source — reads `backend/data/vocab.json`
+- [x] PokeAPI source — fetches all names, 24hr in-memory cache, two-pass relevance filter
+- [x] RAG source — Double Metaphone phonetic index, replaces ChromaDB semantic embeddings
+- [x] Vocab hints injected into LLM prompt with multi-word collapse example
+- [x] WER cap bypassed when vocab hints are provided
+- [x] Vocabulary Hints stage added to pipeline UI
 
-**Success criteria:** "Charizard" is recognized correctly without phonetic substitution.
+**Key learnings from Phase 3:**
+
+**Semantic embeddings are the wrong tool for phonetic correction.** The original RAG implementation used ChromaDB with `nomic-embed-text`. The assumption was that the embedding for "feral gator" would be close to "Feraligatr" in vector space. It isn't. Embedding models encode *meaning*. "Feral gator" (a wild reptile) is semantically far from "Feraligatr" (a Pokémon). The correct tool is a phonetic encoding algorithm.
+
+**Vocabulary filtering is harder than it looks.** The first naive filter ("include any vocab word that shares a substring with the transcript") produced noise: searching for "draco meteor" pulled in Meteorite, Dracozolt, Dracovish, Meteor Mash, Meteor Assault, and Meteor Beam. Each fix revealed a new edge case:
+1. Multi-word terms needed all parts to match → fixed Meteor Mash
+2. Single-word terms with large overlap (Dracozolt) still matched → solved by word claiming: words consumed by multi-word matches can't also match single-word terms
+3. Threshold tuning — "feral" covers exactly 50% of "feraligatr", so the threshold had to be ≤50%
+
+**The word claiming approach** is the key insight: instead of scoring every vocab word independently, run two passes — multi-word terms first, and any transcript word they consume cannot be reused to match single-word terms. This prevents "draco" (used by "Draco Meteor") from also pulling in "Dracozolt".
+
+**Few-shot examples must cover every correction pattern.** The LLM had all the right hints but still failed to correct "pick a chew" → Pikachu until a few-shot example explicitly showed the multi-word → single-word collapse pattern. The model needed to *see* the pattern, not just read an instruction about it. Whenever you add a new correction type, add a corresponding example.
 
 ---
 
-### Phase 4 — Evaluation Suite
+### Phase 4 — Evaluation Suite *(planned)*
 
-**Goal:** Quantify accuracy improvements across layers
+**Goal:** Quantify accuracy improvements across layers and vocab sources
 
-- [ ] Test phrase library (standard + domain-specific)
-- [ ] Automated accuracy scoring (WER — Word Error Rate)
-- [ ] Results dashboard showing accuracy per layer per phrase
-- [ ] Export results as JSON/CSV
+- [ ] Test phrase library covering standard English and domain vocabulary
+- [ ] Automated WER scoring: run each phrase through every layer combination
+- [ ] Results table in UI: accuracy per layer × phrase × model
+- [ ] Export as JSON/CSV
 
 ---
 
 ## 11. Latency Budget
 
-For the user experience to feel responsive, the total pipeline latency (from "stop recording" to "intent displayed") should be under **1.5 seconds**.
+**Observed latencies (M1 Pro, 32GB RAM):**
 
-| Stage | Target Latency | Notes |
+| Stage | Web Speech path | Whisper path |
 |---|---|---|
-| Audio encoding | < 50ms | Browser-native, negligible |
-| Web Speech API ASR | 200–500ms | Google's servers, unavoidable |
-| Network to local backend | < 5ms | Localhost, negligible |
-| LLM correction (3B model) | 200–500ms | M1 Metal, ~50–100 tok/s |
-| JSON parse + UI update | < 10ms | Negligible |
-| **Total** | **~500ms–1s** | Well within budget |
+| ASR | ~500ms | ~5000ms (cold start) |
+| Vocab hints (PokeAPI, cached) | ~10ms | ~10ms |
+| Vocab hints (RAG, index built) | ~5ms | ~5ms |
+| LLM correction (gemma4:e4b) | ~8–13s | ~8–13s |
+| **Total** | **~9–14s** | **~13–18s** |
 
-### Optimizations
+The dominant cost is the LLM, not ASR. The difference between Web Speech API and Whisper (~5s) is large relative to the total because the LLM is slow enough to dominate regardless. A faster LLM (or streamed output) would make the ASR choice more noticeable.
 
-- **Stream LLM output** — display tokens as they arrive (Phase 1.5)
-- **Cache common corrections** — identical transcripts return instantly
-- **Abort stale requests** — if user re-records before LLM responds, cancel the previous request
+### Optimisations (not yet implemented)
+
+- **Whisper warm server:** Keep `whisper-cpp`'s built-in HTTP server running to eliminate the model load cost
+- **Streaming LLM output:** Display tokens as they arrive — eliminates perceived wait even if total latency is the same
+- **Abort stale requests:** If the user re-records before the LLM responds, cancel the in-flight request
 
 ---
 
 ## 12. Testing Strategy
 
-### Manual Testing Checklist (Phase 1)
+### Manual Testing Checklist
 
 - [ ] Speak a clear sentence — verify transcript is accurate
-- [ ] Speak with a deliberate error ("free" instead of "three") — verify LLM corrects it
-- [ ] Speak quickly — verify partial/interim results don't break state
-- [ ] Deny microphone permission — verify graceful error message
-- [ ] Stop Ollama — verify backend returns clear error, UI shows fallback message
-- [ ] Type in text box instead of speaking — verify same LLM pipeline fires
+- [ ] Speak with a deliberate error ("free minutes") — verify LLM corrects it
+- [ ] Speak a Pokémon name with PokeAPI enabled — verify correction
+- [ ] Speak a syllable-split Pokémon name ("pick a chew") with RAG — verify phonetic match
+- [ ] Deny microphone permission — verify graceful error
+- [ ] Stop Ollama — verify backend returns clear error, UI shows message
+- [ ] Toggle between Web Speech and Whisper — verify both paths work
+- [ ] Type in text box — verify same LLM pipeline fires
 
-### Benchmark Phrases (Phase 1 — Standard English)
+### Benchmark Phrases
 
-| # | Phrase | Common ASR Error |
+| Phrase | ASR error | Vocab source needed |
 |---|---|---|
-| 1 | "Set a timer for three minutes" | "free minutes" |
-| 2 | "What is the weather like today" | Generally reliable |
-| 3 | "Remind me to take my medication" | "medic asian" |
-| 4 | "Write a function that sorts an array" | "right a function" |
-| 5 | "Open a new terminal window" | Generally reliable |
-| 6 | "The neural network needs training" | "new URL network" |
+| "set a timer for three minutes" | "free minutes" | None |
+| "remind me to take my medication" | "medic asian" | None |
+| "the neural network needs training" | "new URL network" | None |
+| "I want to use Feraligatr" | "feral gator" | PokeAPI |
+| "use Draco Meteor" | "draco meteor" (lowercase) | PokeAPI |
+| "I choose Pikachu" | "pick a chew" | RAG |
 
 ---
 
@@ -634,39 +745,44 @@ For the user experience to feel responsive, the total pipeline latency (from "st
 
 ```
 vocal-intent-pipeline/
-├── SPEC.md                    ← This document
-├── README.md                  ← Setup and run instructions
-├── package.json               ← Workspace root
+├── SPEC.md                       ← This document
+├── README.md                     ← Setup and run instructions
+├── package.json                  ← Workspace root
 │
 ├── frontend/
-│   ├── index.html
-│   ├── vite.config.ts
+│   ├── index.html                ← Page structure, all element IDs
+│   ├── vite.config.ts            ← Vite config + dev proxy to backend
 │   ├── tsconfig.json
 │   └── src/
-│       ├── main.ts            ← Entry point
-│       ├── voice.ts           ← MediaRecorder + Web Speech API
-│       ├── api.ts             ← Backend API calls
-│       ├── tts.ts             ← Speech Synthesis
-│       ├── ui.ts              ← DOM manipulation, state rendering
-│       └── style.css
+│       ├── main.ts               ← Entry point, wires all modules, ASR routing
+│       ├── voice.ts              ← MediaRecorder + Web Speech API
+│       ├── api.ts                ← fetch calls to Express backend
+│       ├── tts.ts                ← Speech Synthesis wrapper
+│       ├── ui.ts                 ← All DOM reads and writes
+│       └── style.css             ← Dark theme, CSS variables, animations
 │
-├── backend/
-│   ├── tsconfig.json
-│   └── src/
-│       ├── server.ts          ← Express app entry point
-│       ├── routes/
-│       │   ├── correct.ts     ← POST /api/correct
-│       │   ├── whisper.ts     ← POST /api/whisper (Phase 2)
-│       │   └── health.ts      ← GET /api/health
-│       ├── services/
-│       │   ├── ollama.ts      ← Ollama REST client
-│       │   └── prompts.ts     ← LLM prompt templates
-│       └── types.ts           ← Shared TypeScript types
-│
-└── docs/
-    ├── pipeline-diagram.md    ← Detailed pipeline explanation
-    ├── asr-comparison.md      ← Web Speech vs Whisper analysis
-    └── intent-examples.md     ← Example inputs/outputs per layer
+└── backend/
+    ├── package.json
+    ├── tsconfig.json             ← module: Node16 (required for .js extensions in imports)
+    ├── data/
+    │   └── vocab.json            ← Static vocabulary word list
+    └── src/
+        ├── server.ts             ← Express entry point, middleware
+        ├── types.ts              ← Shared TypeScript interfaces
+        ├── routes/
+        │   ├── correct.ts        ← POST /api/correct
+        │   ├── whisper.ts        ← POST /api/whisper (multer + subprocess)
+        │   └── health.ts         ← GET /api/health
+        └── services/
+            ├── ollama.ts         ← Ollama client, WER safety check
+            ├── prompts.ts        ← System prompt + few-shot examples
+            ├── whisper.ts        ← ffmpeg conversion + whisper-cli subprocess
+            └── vocab/
+                ├── index.ts      ← Router + two-pass filterRelevantWords
+                ├── none.ts       ← Returns empty VocabResult
+                ├── static.ts     ← Reads vocab.json with in-memory cache
+                ├── pokeapi.ts    ← PokeAPI client, 24hr TTL cache
+                └── rag.ts        ← Double Metaphone phonetic index
 ```
 
 ---
@@ -675,12 +791,12 @@ vocal-intent-pipeline/
 
 | Phase | Description |
 |---|---|
-| **Streaming** | Stream LLM tokens to the UI as they are generated — eliminates perceived wait |
+| **Phase 4 — Evaluation suite** | Test phrase library with automated WER benchmarking per layer, per model, per vocab source |
+| **Whisper warm server** | Keep whisper-cpp running as a persistent HTTP server to eliminate cold-start latency |
+| **Streaming LLM output** | Stream tokens to the UI as they are generated to eliminate perceived wait |
 | **Context memory** | Feed previous turns to the LLM so it can resolve pronouns ("do that again") |
-| **Confidence calibration** | Learn from user corrections over time to improve thresholds |
-| **Wake word** | Always-on listening with a trigger word ("Hey, prompt...") |
-| **Whisper fine-tuning** | Fine-tune a Whisper model on domain vocabulary |
-| **Offline mode** | Full offline operation using Whisper + Ollama with no network calls |
+| **Whisper fine-tuning** | Fine-tune Whisper on domain vocabulary for better accuracy on proper nouns |
+| **Offline mode** | Full offline operation — Whisper + Ollama with no network calls at all |
 
 ---
 
@@ -694,13 +810,19 @@ vocal-intent-pipeline/
 | **Transcript** | The literal text output of an ASR system |
 | **Confidence** | A 0.0–1.0 score indicating how certain the ASR is about its output |
 | **Hallucination** | When ASR or an LLM produces output that is confidently wrong |
-| **WER** | Word Error Rate — the percentage of words that differ between ASR output and ground truth |
-| **Ollama** | A tool for running open-source LLMs locally via a REST API |
-| **Whisper** | An open-source speech recognition model from OpenAI |
-| **Web Speech API** | A browser-native API for speech recognition and synthesis |
+| **WER** | Word Error Rate — the percentage of words that differ between two strings |
+| **Phonetic substitution** | ASR error where a word is replaced by a similar-sounding word |
+| **Domain hallucination** | ASR error where an unknown proper noun is replaced by familiar words |
+| **Few-shot prompting** | Giving an LLM examples of the desired input/output pattern in the prompt itself |
+| **Double Metaphone** | A phonetic encoding algorithm that maps words to codes representing how they sound |
+| **RAG** | Retrieval-Augmented Generation — retrieving relevant context before generating a response |
+| **Word claiming** | In the vocab filter: transcript words consumed by a multi-word match are excluded from single-word matching to prevent false positives |
+| **Ollama** | A tool for running open-source LLMs locally via a simple REST API |
+| **whisper.cpp** | A C++ port of OpenAI's Whisper that runs locally with Metal acceleration on Apple Silicon |
+| **Web Speech API** | A browser-native API for speech recognition (`SpeechRecognition`) and synthesis (`SpeechSynthesis`) |
 | **MediaRecorder** | A browser API for recording audio/video from `getUserMedia` streams |
 | **LLM** | Large Language Model — a neural network trained to understand and generate text |
-| **Few-shot prompting** | Giving an LLM examples of the desired behavior in the prompt itself |
+| **Cold start** | The overhead of loading a model from disk before the first inference request |
 
 ---
 
