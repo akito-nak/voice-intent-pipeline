@@ -1,110 +1,68 @@
-import { ChromaClient, Collection } from 'chromadb';
+import natural from 'natural';
+const dm = new natural.DoubleMetaphone();
 import type { VocabResult } from '../../types.js';
 
-const COLLECTION_NAME = 'pokemon-vocab';
-const OLLAMA_BASE     = 'http://localhost:11434';
-const EMBED_MODEL     = 'nomic-embed-text';
-const TOP_K           = 8; // how many similar words to return per query
+const TOP_K = 8;
 
-let collection: Collection | null = null;
-let client: ChromaClient | null = null;
-
-/**
- * Calls Ollama's embedding endpoint to convert text into a vector.
- * An embedding is a list of numbers that represents the semantic
- * and phonetic meaning of the text in mathematical space.
- */
-async function embed(text: string): Promise<number[]> {
-  const response = await fetch(`${OLLAMA_BASE}/api/embed`, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ model: EMBED_MODEL, input: text }),
-  });
-
-  const data = (await response.json()) as { embeddings: number[][] };
-  return data.embeddings[0];
+interface PhoneticEntry {
+  code: string;
+  word: string;
 }
 
-/**
- * Returns the ChromaDB collection, creating and populating it if it
- * doesn't exist yet. ChromaDB persists data to disk so this only
- * runs once — subsequent startups reuse the existing collection.
- */
-async function getCollection(): Promise<Collection> {
-  if (collection) return collection;
+let index: PhoneticEntry[] | null = null;
 
-  client = new ChromaClient();
-
-  // Check if the collection already exists on disk
-  try {
-    // getCollection throws if it doesn't exist — use that as our existence check
-    collection = await client.getCollection({ name: COLLECTION_NAME });
-    const count = await collection.count();
-    console.log(`RAG: loaded existing collection (${count} items)`);
-  } catch {
-    console.log('RAG: building vector index for the first time...');
-    collection = await client.createCollection({ name: COLLECTION_NAME });
-    await populateCollection(collection);
-  }
-
-  return collection;
+function getCode(word: string): string {
+  const [primary] = dm.process(word);
+  return primary ?? '';
 }
 
-/**
- * Fetches Pokémon names from PokeAPI, embeds each one, and stores
- * them in ChromaDB. This is a one-time operation that takes ~2 minutes.
- */
-async function populateCollection(col: Collection): Promise<void> {
-  // Fetch a smaller set for now — just Pokémon names (not moves/items)
+async function buildIndex(): Promise<PhoneticEntry[]> {
+  console.log('RAG: building phonetic index...');
   const response = await fetch('https://pokeapi.co/api/v2/pokemon?limit=300');
-  const data     = (await response.json()) as { results: { name: string }[] };
+  const data     = await response.json() as { results: { name: string }[] };
 
   const words = data.results.map(p =>
-    p.name
-      .split('-')
-      .map(w => w.charAt(0).toUpperCase() + w.slice(1))
-      .join(' ')
+    p.name.split('-').map(w => w[0].toUpperCase() + w.slice(1)).join(' ')
   );
 
-  console.log(`RAG: embedding ${words.length} Pokémon names...`);
-
-  // Embed in batches of 10 to avoid overwhelming Ollama
-  const batchSize = 10;
-  for (let i = 0; i < words.length; i += batchSize) {
-    const batch      = words.slice(i, i + batchSize);
-    const embeddings = await Promise.all(batch.map(w => embed(w)));
-
-    await col.add({
-      ids:        batch.map((_, j) => `pokemon-${i + j}`),
-      embeddings: embeddings,
-      documents:  batch,
-    });
-
-    process.stdout.write(`\r  ${i + batchSize}/${words.length}`);
+  const entries: PhoneticEntry[] = [];
+  for (const word of words) {
+    // Index each part of multi-word names separately so "Draco" and "Meteor"
+    // in "Draco Meteor" can each be found by a transcript word
+    const parts = word.split(' ');
+    for (const part of parts) {
+      const code = getCode(part);
+      if (code) entries.push({ code, word });
+    }
   }
 
-  console.log('\nRAG: index built successfully');
+  console.log(`RAG: phonetic index built (${words.length} names, ${entries.length} entries)`);
+  return entries;
 }
 
-/**
- * Given a transcript, finds the most phonetically/semantically similar
- * vocabulary words in the vector database.
- */
 export async function getVocab(transcript: string): Promise<VocabResult> {
-  try {
-    const col            = await getCollection();
-    const queryEmbedding = await embed(transcript);
+  if (!index) index = await buildIndex();
 
-    const results = await col.query({
-      queryEmbeddings: [queryEmbedding],
-      nResults:        TOP_K,
-    });
+  const transcriptWords = transcript.split(/\s+/).filter(w => w.length > 2);
+  const candidates      = new Set<string>();
 
-    const words = (results.documents[0] ?? []).filter(Boolean) as string[];
-    return { words, source: 'rag' };
+  for (const tw of transcriptWords) {
+    const twCode = getCode(tw);
+    if (!twCode) continue;
 
-  } catch (err) {
-    console.error('RAG error:', err);
-    return { words: [], source: 'rag' };
+    for (const entry of index) {
+      // Match if either code is a prefix of the other:
+      // "pick" (PK) vs "Pikachu" part (PKX) → PK is prefix of PKX ✓
+      // "chew" (X)  vs "Pikachu" part (PKX) → X is suffix... won't match
+      // That's fine — one matching part is enough to surface the full name
+      if (entry.code.startsWith(twCode) || twCode.startsWith(entry.code)) {
+        candidates.add(entry.word);
+      }
+    }
   }
+
+  return {
+    words: Array.from(candidates).slice(0, TOP_K),
+    source: 'rag',
+  };
 }

@@ -49,6 +49,16 @@ Output:
   "intent": "Set a medication reminder at 8 o'clock",
   "changes": ["medic asian → medication"],
   "confidence": 0.95
+}
+  
+Example 4 (vocabulary hint — multiple words collapse into one):
+Input transcript (with hints: Pikachu, Raichu): "I want to catch pick a chew"
+Output:
+{
+  "corrected": "I want to catch Pikachu",
+  "intent": "Catch Pikachu",
+  "changes": ["pick a chew → Pikachu"],
+  "confidence": 0.92
 }`;
 
 export function buildCorrectionPrompt(
@@ -59,7 +69,7 @@ export function buildCorrectionPrompt(
     return `Input transcript: "${transcript}"`;
   }
 
-  return `Known vocabulary for this domain (the transcript may contain phonetic approximations of these words):
+  return `Known vocabulary for this domain. The transcript may contain phonetic approximations of these words — including cases where multiple transcript words collapse into a single vocabulary word (e.g. "pick a chew" → "Pikachu"):
 ${vocabHints.join(', ')}
 
 Input transcript: "${transcript}"`;
